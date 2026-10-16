@@ -482,7 +482,7 @@ gl.bindFramebuffer(gl.FRAMEBUFFER, smallFbo);
 gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, smallTex, 0);
 gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 const smallPixels = new Uint8Array(SMALL[0] * SMALL[1] * 4);
-let fieldSorted = new Float32Array([-0.15, 1.2]);
+let fieldCdf = Float64Array.from({ length: 257 }, (_, i) => i / 256);
 
 function measureField(w, h) {
   gl.bindFramebuffer(gl.READ_FRAMEBUFFER, plateFbo);
@@ -492,41 +492,44 @@ function measureField(w, h) {
   gl.bindFramebuffer(gl.READ_FRAMEBUFFER, smallFbo);
   gl.readPixels(0, 0, SMALL[0], SMALL[1], gl.RGBA, gl.UNSIGNED_BYTE, smallPixels);
   // Weight the middle of the frame more: that is where the bright negative is seen,
-  // the dark edges barely register. Store values and cumulative weights.
+  // the dark edges barely register. The field is stored in 8 bits, so build a weighted
+  // histogram over its 256 levels and treat each level as spread evenly across its width;
+  // sorting the raw values instead gives runs of equal quantiles and a front that halts and jumps.
   const [W, H] = SMALL;
-  const items = [];
+  const hist = new Float64Array(256);
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       const dx = (x / (W - 1) - 0.5) * 2, dy = (y / (H - 1) - 0.5) * 2;
       const r = Math.hypot(dx, dy * 0.9);
-      const w = 0.4 + 0.6 * (1 - Math.min(1, Math.max(0, (r - 0.55) / 0.5)));
-      items.push([(smallPixels[(y * W + x) * 4] / 255) * 3 - 1, w]);
+      hist[smallPixels[(y * W + x) * 4]] += 0.4 + 0.6 * (1 - Math.min(1, Math.max(0, (r - 0.55) / 0.5)));
     }
   }
-  items.sort((a, b) => a[0] - b[0]);
-  const total = items.reduce((sum, it) => sum + it[1], 0);
-  // resample to 256 evenly weighted quantiles
-  const q = new Float32Array(256);
-  let acc = 0, j = 0;
-  for (let k = 0; k < q.length; k++) {
-    const target = (k / (q.length - 1)) * total;
-    while (j < items.length - 1 && acc + items[j][1] < target) acc += items[j++][1];
-    q[k] = items[j][0];
-  }
-  fieldSorted = q;
+  const cdf = new Float64Array(257);
+  for (let b = 0; b < 256; b++) cdf[b + 1] = cdf[b] + hist[b];
+  for (let b = 0; b <= 256; b++) cdf[b] /= cdf[256];
+  fieldCdf = cdf;
   gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
   gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
 }
 
-// Threshold at which `area` (0..1) of the plate has turned positive.
+// Threshold at which `area` (0..1) of the plate has turned positive. Continuous and
+// strictly increasing, so the front never stalls.
+const LEVEL = 3 / 255; // field units per 8-bit level
+const levelLow = (b) => (b / 255) * 3 - 1 - LEVEL / 2;
+
 function frontAt(area) {
-  const n = fieldSorted.length;
+  const cdf = fieldCdf;
+  let first = 0, last = 255;
+  while (cdf[first + 1] <= 0) first++;
+  while (cdf[last] >= 1) last--;
   // the shader's transition is ±0.13 wide, so lead/lag by that much at the ends
-  const lo = fieldSorted[0] - 0.15, hi = fieldSorted[n - 1] + 0.15;
+  const lo = levelLow(first) - 0.15, hi = levelLow(last) + LEVEL + 0.15;
   if (area <= 0) return lo;
   if (area >= 1) return hi;
-  const x = area * (n - 1), i = Math.floor(x);
-  const v = fieldSorted[i] + (fieldSorted[Math.min(i + 1, n - 1)] - fieldSorted[i]) * (x - i);
+  let b = first;
+  while (b < last && cdf[b + 1] < area) b++;
+  const span = cdf[b + 1] - cdf[b];
+  const v = levelLow(b) + LEVEL * (span > 0 ? (area - cdf[b]) / span : 0.5);
   return v + 0.15 * (2 * area - 1);
 }
 
