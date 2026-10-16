@@ -35,29 +35,8 @@ void main() {
   gl_Position = vec4(aPos, 0.0, 1.0);
 }`;
 
-const FRAG = `#version 300 es
-precision highp float;
-in vec2 vUv;
-out vec4 outColor;
-
-uniform sampler2D uTex;
-uniform vec2 uRes;      // canvas pixels
-uniform vec2 uImg;      // image pixels
-uniform float uT;       // seconds into the cycle
-uniform float uDur;     // cycle length
-uniform float uSeed;    // per-photo randomness
-uniform float uClock;   // wall clock, for grain
-uniform float uHasTex;
-
-// per-plate look, generated in JS (see plateStyle)
-uniform vec4 uBorder;   // base border width per side L, R, T, B (screen-height units)
-uniform vec4 uEdge;     // lobe amplitude, lobe frequency, tear amplitude, edge softness
-uniform vec4 uFx1;      // silver rim, pour streaks, dripping top edge, mottle
-uniform vec4 uFx2;      // spatter amount, spatter x, spatter y, hairlines
-uniform vec4 uLeak;     // light leak x, y, radius, strength
-uniform vec4 uBlobs[4]; // ink blobs eating into the plate: x, y (uv), radius, on/off
-
-// --- noise ---
+// Shared noise helpers.
+const NOISE = `
 float hash(vec2 p) {
   p = fract(p * vec2(123.34, 456.21));
   p += dot(p, p + 45.32);
@@ -77,39 +56,30 @@ float fbm(vec2 p) {
     a *= 0.5;
   }
   return v;
-}
+}`;
+
+// Pass 1, once per photo: bakes everything about the plate that does not change over time
+// into two textures, so the per-frame pass stays cheap.
+//   plate0 = (tone multiplier / 2, tone offset + 0.5, (edge distance + 0.1) / 0.4, ink spatter)
+//   plate1 = ((developing field + 1) / 3, haze noise, light leak, border texture)
+const PLATE_FRAG = `#version 300 es
+precision highp float;
+in vec2 vUv;
+layout(location = 0) out vec4 plate0;
+layout(location = 1) out vec4 plate1;
+
+uniform vec2 uRes;
+uniform float uSeed;
+uniform vec4 uBorder;   // base border width per side L, R, T, B (screen-height units)
+uniform vec4 uEdge;     // lobe amplitude, lobe frequency, tear amplitude, edge softness
+uniform vec4 uFx1;      // silver rim, pour streaks, dripping top edge, mottle
+uniform vec4 uFx2;      // spatter amount, spatter x, spatter y, hairlines
+uniform vec4 uLeak;     // light leak x, y, radius, strength
+uniform vec4 uBlobs[4]; // ink blobs eating into the plate: x, y (uv), radius, on/off
+${NOISE}
 float smin(float a, float b, float k) {
   float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
   return mix(b, a, h) - k * h * (1.0 - h);
-}
-
-// cover-fit + slow push-in
-vec2 imageUv(vec2 uv, float zoom) {
-  float ca = uRes.x / uRes.y, ia = uImg.x / uImg.y;
-  vec2 s = ca > ia ? vec2(1.0, ia / ca) : vec2(ca / ia, 1.0);
-  vec2 p = (uv - 0.5) * s / zoom + 0.5;
-  return vec2(p.x, 1.0 - p.y);
-}
-
-// soft blur: a ring of mip-level taps
-vec3 sampleBlur(vec2 uv, float px) {
-  float lod = log2(max(px, 1.0));
-  vec2 r = vec2(px) / uRes;
-  vec3 c = textureLod(uTex, uv, lod).rgb * 2.0;
-  for (int i = 0; i < 8; i++) {
-    float a = float(i) * 0.785398 + uSeed;
-    c += textureLod(uTex, uv + vec2(cos(a), sin(a)) * r, lod).rgb;
-  }
-  return c / 10.0;
-}
-
-float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
-
-vec3 sepia(float l) {
-  vec3 dark  = vec3(0.045, 0.040, 0.034);
-  vec3 mid   = vec3(0.40, 0.365, 0.30);
-  vec3 light = vec3(0.86, 0.82, 0.70);
-  return l < 0.5 ? mix(dark, mid, l * 2.0) : mix(mid, light, l * 2.0 - 1.0);
 }
 
 // how far a border pushes inward at position s along one side
@@ -149,45 +119,20 @@ void main() {
   vec2 uv = vUv;
   float aspect = uRes.x / uRes.y;
   vec2 q = uv * vec2(aspect, 1.0);
-  float t = uT;
   vec2 sd = vec2(uSeed * 13.7, uSeed * 7.3);
 
-  // --- timeline ---
-  float fadeIn   = smoothstep(0.0, 1.4, t);
-  float fadeOut  = 1.0 - smoothstep(uDur - 2.0, uDur - 0.7, t);
-  float vis      = fadeIn * fadeOut;
-  float sharpen  = smoothstep(0.4, 3.2, t);              // negative comes into focus
-  float develop  = clamp((t - 2.8) / (uDur - 4.8), 0.0, 1.0); // positive takes over
-  float blurOut  = smoothstep(uDur - 2.6, uDur - 0.8, t);
-
-  // --- developing front ---
-  // field is high in the middle and noisy; the positive wins wherever field < threshold.
+  // developing front: high in the middle and noisy; the positive wins wherever field < threshold
   float r = length((uv - 0.5) * vec2(1.0, 1.25)) * 1.55;
-  float drift = t * 0.035;
-  float n  = fbm(q * 2.4 + sd + vec2(drift, -drift));
-  float n2 = fbm(q * 7.0 - sd + vec2(0.0, drift * 2.0));
-  float field = 1.0 - r * 0.8 + (n - 0.5) * 1.1 + (n2 - 0.5) * 0.25;
-  float thresh = mix(-0.15, 1.65, develop);
-  float front = thresh - field;
-  float positive = smoothstep(-0.06, 0.10, front);
-  float haze = exp(-pow(front / 0.16, 2.0)) * step(0.001, develop) * (1.0 - smoothstep(0.92, 1.0, develop));
-  haze *= 0.55 + 0.45 * fbm(q * 11.0 + sd + drift * 3.0);
+  float field = 1.0 - r * 0.8 + (fbm(q * 2.4 + sd) - 0.5) * 1.1 + (fbm(q * 7.0 - sd) - 0.5) * 0.25;
+  float hazeN = fbm(q * 11.0 + sd);
 
-  // --- image ---
-  float zoom = 1.0 + 0.045 * (t / uDur);
-  vec2 iuv = imageUv(uv, zoom);
-  float blurPx = mix(22.0, 1.5, sharpen) + blurOut * 18.0;
-  vec3 srcNeg = uHasTex > 0.5 ? sampleBlur(iuv, blurPx + haze * 3.0) : vec3(0.0);
-  vec3 srcPos = uHasTex > 0.5 ? sampleBlur(iuv, max(1.0, blurPx * 0.6 + haze * 5.0)) : vec3(0.0);
-
-  // --- the plate itself ---
-  // Everything here is density on the plate, so the negative shows it inverted too
-  // (the black border reads as pale grey until the positive comes through).
+  // Plate density. The negative shows it inverted too, so the black border
+  // reads as pale grey until the positive comes through.
   float mul = 1.0, add = 0.0;
 
   // uneven tone and mottled emulsion
   mul *= 0.84 + 0.3 * fbm(q * vec2(1.6, 3.2) + sd * 2.0);
-  float mottle = smoothstep(0.5, 0.75, fbm(q * 2.5 + sd * 1.7)) * (hash(floor(q * uRes.y / 2.5) + sd) - 0.5);
+  float mottle = smoothstep(0.5, 0.75, fbm(q * 2.5 + sd * 1.7)) * (hash(floor(q * 1080.0 / 2.5) + sd) - 0.5);
   add += mottle * 0.35 * uFx1.w;
 
   // pour streaks: wavy vertical lines where the collodion ran
@@ -231,56 +176,137 @@ void main() {
            * smoothstep(0.55, 0.85, vnoise(vec2(q.x * 2.5 + uSeed * 4.0, uv.y * 300.0)));
   add += sx * 0.18 + sy * 0.22 * uFx2.w;
 
-  // border
+  // border: burnt falloff, darker corners, silvered rim and a peeled emulsion line
   float d = plateDist(uv, q, aspect);
-  float soft = uEdge.w + blurPx / uRes.y * 0.8;
-  float inside = smoothstep(-soft, soft, d);
   float burnW = 0.03 + 0.12 * fbm(q * 2.2 + sd * 4.0);
-  float burn = smoothstep(0.0, burnW, d);
-  mul *= mix(0.12, 1.0, burn);
-  // corners go darker, each by a different amount
+  mul *= mix(0.08, 1.0, smoothstep(0.0, burnW, d));
   vec2 cq = abs(uv - 0.5) * 2.0;
   float corner = smoothstep(0.55, 1.0, cq.x) * smoothstep(0.45, 1.0, cq.y);
   mul *= 1.0 - corner * (0.35 + 0.5 * fbm(q * 1.5 + sd * 6.0));
   float rimN = fbm(q * 9.0 + sd);
   float rim = exp(-pow((d - 0.014) / (0.006 + 0.01 * rimN), 2.0)) * uFx1.x * smoothstep(0.3, 0.6, rimN);
-  float peelN = vnoise(q * 20.0 + sd);
-  float peel = exp(-pow((d - 0.032 - 0.02 * rimN) / 0.003, 2.0)) * uFx1.x * smoothstep(0.35, 0.65, peelN);
+  float peel = exp(-pow((d - 0.032 - 0.02 * rimN) / 0.003, 2.0)) * uFx1.x * smoothstep(0.35, 0.65, vnoise(q * 20.0 + sd));
   add += rim * 0.3 - peel * 0.18;
-  float outside = 0.025 + 0.05 * fbm(q * 18.0 + sd);
 
-  // apply to both exposures
-  float lp = luma(srcPos);
-  lp = smoothstep(0.03, 0.97, lp);
-  lp = pow(lp, 1.15);
-  lp = clamp(lp * mul + add, 0.0, 1.0);
-  lp = mix(lp, 0.02, spatter);
-  lp = mix(outside, lp, inside);
+  float leak = exp(-pow(length(q - uLeak.xy * vec2(aspect, 1.0)) / max(uLeak.z, 0.01), 2.0)) * uLeak.w;
 
-  float lnBase = clamp(luma(srcNeg) * mul + add, 0.0, 1.0);
-  lnBase = mix(lnBase, 0.02, spatter);
-  lnBase = mix(outside, lnBase, inside);
+  plate0 = vec4(mul * 0.5, add + 0.5, (d + 0.1) / 0.4, spatter);
+  plate1 = vec4((field + 1.0) / 3.0, hazeN, leak, fbm(q * 18.0 + sd));
+}`;
+
+// Pass 2, every frame: the photo, the developing front and grain.
+const FRAG = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 outColor;
+
+uniform sampler2D uTex;
+uniform sampler2D uPlate0;
+uniform sampler2D uPlate1;
+uniform vec2 uRes;      // canvas pixels
+uniform vec2 uImg;      // image pixels
+uniform float uT;       // seconds into the cycle
+uniform float uDur;     // cycle length
+uniform float uSeed;
+uniform float uClock;   // wall clock, for grain
+uniform float uHasTex;
+uniform float uSoft;    // edge softness of this plate
+
+float hash(vec2 p) {
+  p = fract(p * vec2(123.34, 456.21));
+  p += dot(p, p + 45.32);
+  return fract(p.x * p.y);
+}
+
+// cover-fit + slow push-in
+vec2 imageUv(vec2 uv, float zoom) {
+  float ca = uRes.x / uRes.y, ia = uImg.x / uImg.y;
+  vec2 s = ca > ia ? vec2(1.0, ia / ca) : vec2(ca / ia, 1.0);
+  vec2 p = (uv - 0.5) * s / zoom + 0.5;
+  return vec2(p.x, 1.0 - p.y);
+}
+
+// soft blur: a ring of mip-level taps
+vec3 sampleBlur(vec2 uv, float px) {
+  float lod = log2(max(px, 1.0));
+  vec2 r = vec2(px) / uRes;
+  vec3 c = textureLod(uTex, uv, lod).rgb * 2.0;
+  for (int i = 0; i < 8; i++) {
+    float a = float(i) * 0.785398 + uSeed;
+    c += textureLod(uTex, uv + vec2(cos(a), sin(a)) * r, lod).rgb;
+  }
+  return c / 10.0;
+}
+
+float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+
+vec3 sepia(float l) {
+  vec3 dark  = vec3(0.026, 0.024, 0.021);
+  vec3 mid   = vec3(0.40, 0.365, 0.30);
+  vec3 light = vec3(0.86, 0.82, 0.70);
+  return l < 0.5 ? mix(dark, mid, l * 2.0) : mix(mid, light, l * 2.0 - 1.0);
+}
+
+void main() {
+  vec2 uv = vUv;
+  float t = uT;
+  vec4 p0 = texture(uPlate0, uv);
+  vec4 p1 = texture(uPlate1, uv);
+  float mul = p0.r * 2.0, add = p0.g - 0.5, d = p0.b * 0.4 - 0.1, spatter = p0.a;
+  float field = p1.r * 3.0 - 1.0, hazeN = p1.g, leak = p1.b, borderN = p1.a;
+
+  // --- timeline ---
+  float fadeIn   = smoothstep(0.0, 1.4, t);
+  float fadeOut  = 1.0 - smoothstep(uDur - 2.0, uDur - 0.7, t);
+  float vis      = fadeIn * fadeOut;
+  float sharpen  = smoothstep(0.4, 3.2, t);              // negative comes into focus
+  float develop  = clamp((t - 2.8) / (uDur - 4.8), 0.0, 1.0); // positive takes over
+  float blurOut  = smoothstep(uDur - 2.6, uDur - 0.8, t);
+
+  // --- developing front ---
+  float thresh = mix(-0.15, 1.65, develop);
+  float front = thresh - field;
+  float positive = smoothstep(-0.06, 0.10, front);
+  float haze = exp(-pow(front / 0.16, 2.0)) * step(0.001, develop) * (1.0 - smoothstep(0.92, 1.0, develop));
+  haze *= 0.55 + 0.45 * hazeN;
+
+  // --- image ---
+  float zoom = 1.0 + 0.045 * (t / uDur);
+  vec2 iuv = imageUv(uv, zoom);
+  float blurPx = mix(22.0, 1.5, sharpen) + blurOut * 18.0;
+  vec3 srcNeg = uHasTex > 0.5 ? sampleBlur(iuv, blurPx + haze * 3.0) : vec3(0.0);
+  vec3 srcPos = uHasTex > 0.5 ? sampleBlur(iuv, max(1.0, blurPx * 0.6 + haze * 5.0)) : vec3(0.0);
+
+  float soft = uSoft + blurPx / uRes.y * 0.8;
+  float inside = smoothstep(-soft, soft, d);
 
   // negative: inverted, low contrast, cool grey, washed out at first
+  float lnBase = clamp(luma(srcNeg) * mul + add, 0.0, 1.0);
+  lnBase = mix(lnBase, 0.02, spatter);
+  lnBase = mix(0.03, lnBase, inside);
   float ln = 1.0 - lnBase;
   ln = mix(0.62, ln, mix(0.35, 0.95, sharpen));
   ln = mix(ln, smoothstep(0.1, 0.9, ln) * 1.08, sharpen * 0.6);
   vec3 negCol = vec3(ln) * vec3(0.93, 0.94, 0.96);
 
-  // positive: sepia, with an optional warm light leak
-  vec3 posCol = sepia(lp);
-  float leak = exp(-pow(length(q - uLeak.xy * vec2(aspect, 1.0)) / max(uLeak.z, 0.01), 2.0)) * uLeak.w;
-  posCol += vec3(0.22, 0.16, 0.04) * leak * inside;
+  // positive: sepia, warm light leak, border near black (~#0a0a0a at most)
+  float lp = luma(srcPos);
+  lp = smoothstep(0.03, 0.97, lp);
+  lp = pow(lp, 1.15);
+  lp = clamp(lp * mul + add, 0.0, 1.0);
+  lp = mix(lp, 0.0, spatter);
+  vec3 posCol = sepia(lp) + vec3(0.22, 0.16, 0.04) * leak;
+  vec3 borderCol = vec3(0.016, 0.015, 0.014) * (0.6 + 0.8 * borderN);
+  posCol = mix(borderCol, posCol, inside);
 
   vec3 col = mix(negCol, posCol, positive);
 
   // smoky developer at the front: pale and milky
-  vec3 smoke = vec3(0.78, 0.77, 0.74);
-  col = mix(col, smoke, haze * 0.4 * inside);
+  col = mix(col, vec3(0.78, 0.77, 0.74), haze * 0.4 * inside);
 
-  // film grain
+  // film grain, faint in the blacks so the border stays dark
   float g = hash(uv * uRes + fract(uClock * 7.13) * 100.0) - 0.5;
-  col += g * 0.055;
+  col += g * 0.055 * mix(0.15, 1.0, smoothstep(0.02, 0.25, luma(col)));
 
   col *= vis;
   outColor = vec4(max(col, 0.0), 1.0);
@@ -294,24 +320,24 @@ function compile(type, src) {
   return s;
 }
 
-const prog = gl.createProgram();
-gl.attachShader(prog, compile(gl.VERTEX_SHADER, VERT));
-gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FRAG));
-gl.linkProgram(prog);
-if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
-gl.useProgram(prog);
+function program(fragSrc, uniforms) {
+  const p = gl.createProgram();
+  gl.attachShader(p, compile(gl.VERTEX_SHADER, VERT));
+  gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fragSrc));
+  gl.bindAttribLocation(p, 0, 'aPos');
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  return { p, u: Object.fromEntries(uniforms.map((n) => [n, gl.getUniformLocation(p, n)])) };
+}
+
+const main = program(FRAG, ['uTex', 'uPlate0', 'uPlate1', 'uRes', 'uImg', 'uT', 'uDur', 'uSeed', 'uClock', 'uHasTex', 'uSoft']);
+const bake = program(PLATE_FRAG, ['uRes', 'uSeed', 'uBorder', 'uEdge', 'uFx1', 'uFx2', 'uLeak', 'uBlobs']);
 
 const buf = gl.createBuffer();
 gl.bindBuffer(gl.ARRAY_BUFFER, buf);
 gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
-const aPos = gl.getAttribLocation(prog, 'aPos');
-gl.enableVertexAttribArray(aPos);
-gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
-
-const U = Object.fromEntries(
-  ['uTex', 'uRes', 'uImg', 'uT', 'uDur', 'uSeed', 'uClock', 'uHasTex', 'uBorder', 'uEdge', 'uFx1', 'uFx2', 'uLeak', 'uBlobs']
-    .map((n) => [n, gl.getUniformLocation(prog, n)]),
-);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
 
 // ---------- plate styles ----------
 // Every photo gets its own plate: thin and clean, torn with a silvered rim, or heavy and blotchy.
@@ -362,18 +388,58 @@ function plateStyle(seed) {
   return { kind, border, edge, fx1, fx2, leak, blobs };
 }
 
-const tex = gl.createTexture();
-gl.bindTexture(gl.TEXTURE_2D, tex);
-gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
-gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+function makeTexture(mip) {
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, mip ? gl.LINEAR_MIPMAP_LINEAR : gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return t;
+}
 
-function upload(img) {
+const tex = makeTexture(true);
+const plateTex = [makeTexture(false), makeTexture(false)];
+const plateFbo = gl.createFramebuffer();
+let plateSize = [0, 0];
+
+function upload(bitmap) {
   gl.bindTexture(gl.TEXTURE_2D, tex);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
   gl.generateMipmap(gl.TEXTURE_2D);
 }
+
+// Renders the static plate layers. Capped at 1920 px wide: the details are soft enough.
+function bakePlate() {
+  const scale = Math.min(1, 1920 / canvas.width);
+  const w = Math.round(canvas.width * scale), h = Math.round(canvas.height * scale);
+  if (w !== plateSize[0] || h !== plateSize[1]) {
+    for (const t of plateTex) {
+      gl.bindTexture(gl.TEXTURE_2D, t);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    }
+    plateSize = [w, h];
+  }
+  gl.bindFramebuffer(gl.FRAMEBUFFER, plateFbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, plateTex[0], 0);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, plateTex[1], 0);
+  gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
+  gl.viewport(0, 0, w, h);
+  gl.useProgram(bake.p);
+  gl.uniform2f(bake.u.uRes, w, h);
+  gl.uniform1f(bake.u.uSeed, seed);
+  gl.uniform4fv(bake.u.uBorder, style.border);
+  gl.uniform4fv(bake.u.uEdge, style.edge);
+  gl.uniform4fv(bake.u.uFx1, style.fx1);
+  gl.uniform4fv(bake.u.uFx2, style.fx2);
+  gl.uniform4fv(bake.u.uLeak, style.leak);
+  gl.uniform4fv(bake.u.uBlobs, style.blobs);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  plateDirty = false;
+}
+
+let plateDirty = true;
 
 function resize() {
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -381,8 +447,8 @@ function resize() {
   if (canvas.width !== w || canvas.height !== h) {
     canvas.width = w;
     canvas.height = h;
+    plateDirty = true;
   }
-  gl.viewport(0, 0, w, h);
 }
 addEventListener('resize', resize);
 resize();
@@ -417,7 +483,7 @@ function loadImage(url) {
     const img = new Image();
     img.crossOrigin = 'anonymous';
     img.decoding = 'async';
-    img.onload = () => resolve(img);
+    img.onload = () => createImageBitmap(img).then(resolve, reject);
     img.onerror = () => reject(new Error(`load failed: ${url}`));
     img.src = url;
   });
@@ -459,6 +525,7 @@ async function advance(now) {
   captionEl.textContent = photo.caption || '';
   seed = FIXED_SEED ?? Math.random();
   style = plateStyle(seed);
+  plateDirty = true;
   // keep the note inside the plate border
   captionEl.style.left = `${(style.border[0] + 0.045) * innerHeight}px`;
   captionEl.style.top = `${(style.border[2] + 0.04) * innerHeight}px`;
@@ -480,21 +547,26 @@ function frame(nowMs) {
     t = current && FREEZE === null ? DURATION : t;
   }
 
-  resize();
-  gl.uniform1i(U.uTex, 0);
-  gl.uniform2f(U.uRes, canvas.width, canvas.height);
-  gl.uniform2f(U.uImg, current?.img.naturalWidth || 1, current?.img.naturalHeight || 1);
-  gl.uniform1f(U.uT, current ? t : 0);
-  gl.uniform1f(U.uDur, DURATION);
-  gl.uniform1f(U.uSeed, seed);
-  gl.uniform1f(U.uClock, now);
-  gl.uniform1f(U.uHasTex, current ? 1 : 0);
-  gl.uniform4fv(U.uBorder, style.border);
-  gl.uniform4fv(U.uEdge, style.edge);
-  gl.uniform4fv(U.uFx1, style.fx1);
-  gl.uniform4fv(U.uFx2, style.fx2);
-  gl.uniform4fv(U.uLeak, style.leak);
-  gl.uniform4fv(U.uBlobs, style.blobs);
+  if (plateDirty) bakePlate();
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.useProgram(main.p);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, plateTex[0]);
+  gl.activeTexture(gl.TEXTURE2);
+  gl.bindTexture(gl.TEXTURE_2D, plateTex[1]);
+  gl.uniform1i(main.u.uTex, 0);
+  gl.uniform1i(main.u.uPlate0, 1);
+  gl.uniform1i(main.u.uPlate1, 2);
+  gl.uniform2f(main.u.uRes, canvas.width, canvas.height);
+  gl.uniform2f(main.u.uImg, current?.img.width || 1, current?.img.height || 1);
+  gl.uniform1f(main.u.uT, current ? t : 0);
+  gl.uniform1f(main.u.uDur, DURATION);
+  gl.uniform1f(main.u.uSeed, seed);
+  gl.uniform1f(main.u.uClock, now);
+  gl.uniform1f(main.u.uHasTex, current ? 1 : 0);
+  gl.uniform1f(main.u.uSoft, style.edge[3]);
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
   // caption is written onto the plate once the positive has mostly come through
