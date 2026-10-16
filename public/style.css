@@ -1,0 +1,53 @@
+html, body {
+  margin: 0;
+  height: 100%;
+  background: #000;
+  overflow: hidden;
+  cursor: none;
+}
+
+#plate {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  display: block;
+}
+
+#caption {
+  position: fixed;
+  top: 4.5vh;
+  left: 4vw;
+  font-family: 'Homemade Apple', cursive;
+  font-size: clamp(14px, 1.6vw, 30px);
+  color: rgb(228 218 196);
+  opacity: 0;
+  text-shadow: 0 0 6px rgb(0 0 0 / 0.5);
+  transform: rotate(-1.5deg);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+#spinner {
+  position: fixed;
+  right: 3vw;
+  bottom: 4vh;
+  width: clamp(16px, 1.5vw, 28px);
+  height: clamp(16px, 1.5vw, 28px);
+  color: rgb(235 228 212 / 0.8);
+  animation: spin 3s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+#status {
+  position: fixed;
+  left: 50%;
+  bottom: 4vh;
+  transform: translateX(-50%);
+  font: 13px/1.4 ui-monospace, Menlo, monospace;
+  color: rgb(235 228 212 / 0.6);
+  pointer-events: none;
+}
