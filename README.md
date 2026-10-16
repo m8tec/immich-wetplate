@@ -27,21 +27,24 @@ Create the API key in Immich under *Account Settings → API Keys*. It only need
 
 | Parameter | Effect |
 | --- | --- |
-| `duration=12.5` | Seconds per photo |
+| `duration=12` | Seconds per photo |
 | `count=30` | Photos fetched per batch |
 | `t=5` | Freeze the cycle at this second, for tuning the look |
 | `img=<url>&caption=...` | Show a single image only |
+| `dev=7` | Fixed development end in seconds |
 | `seed=0.42` | Use one fixed plate look (0–1) instead of a random one per photo |
 
-## Timeline per photo (default 12.5 s)
+## Timeline per photo (default 12 s)
+
+Measured frame by frame from the game footage; `duration` scales all of it.
 
 | Time | Phase |
 | --- | --- |
-| 0–1.4 s | Fade in from black, very blurry |
-| 0.4–3.2 s | Negative comes into focus |
-| 2.8–~9 s | Positive develops from the edges inward, the negative lingers in the middle |
-| ~5.6–7.7 s | Handwritten note appears |
-| 9.9–11.8 s | Blur and fade to black |
+| 0.2–2.4 s | Up from black as a blurry negative, sharp from about 2.6 s |
+| 2.1 s – varies | Positive develops from the edges inward. The end varies per photo: mostly 5–6.5 s, sometimes up to 9 s, rarely 11.5 s |
+| 9.2–10 s | Blur, always at the same time, even if the plate is still developing |
+| 9.2–11.35 s | Fade to black |
+| 11.35–12 s | Black |
 
 ## Plate looks
 

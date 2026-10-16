@@ -4,15 +4,17 @@
 //
 // URL params: ?duration=12.5  seconds per photo
 //             ?t=5            freeze the cycle at this time (for tuning)
+//             ?dev=7          fixed development end in seconds (for tuning)
 //             ?count=30       photos fetched per batch
 //             ?img=<url>      show only this image (&caption=... for the note)
 //             ?seed=0.42      fixed plate look (0..1)
 
 const params = new URLSearchParams(location.search);
-const DURATION = Number(params.get('duration')) || 12.5;
+const DURATION = Number(params.get('duration')) || 12;
 const FREEZE = params.has('t') ? Number(params.get('t')) : null;
 const BATCH = Number(params.get('count')) || 30;
 const FIXED_IMG = params.get('img'); // show only this image (for tuning)
+const FIXED_DEV = params.has('dev') ? Number(params.get('dev')) : null;
 const FIXED_SEED = params.has('seed') ? Number(params.get('seed')) : null; // reuse one plate look
 
 const canvas = document.getElementById('plate');
@@ -211,6 +213,8 @@ uniform float uSeed;
 uniform float uClock;   // wall clock, for grain
 uniform float uHasTex;
 uniform float uSoft;    // edge softness of this plate
+uniform float uDevelop; // 0..1 progress of the positive (computed in JS)
+uniform float uThresh;  // field value the developing front has reached
 
 float hash(vec2 p) {
   p = fract(p * vec2(123.34, 456.21));
@@ -249,29 +253,29 @@ vec3 sepia(float l) {
 
 void main() {
   vec2 uv = vUv;
-  float t = uT;
+  // Timeline measured from the game footage (12 s per photo), scaled to uDur.
+  float t = uT * 12.0 / uDur;
   vec4 p0 = texture(uPlate0, uv);
   vec4 p1 = texture(uPlate1, uv);
   float mul = p0.r * 2.0, add = p0.g - 0.5, d = p0.b * 0.4 - 0.1, spatter = p0.a;
   float field = p1.r * 3.0 - 1.0, hazeN = p1.g, leak = p1.b, borderN = p1.a;
 
   // --- timeline ---
-  float fadeIn   = smoothstep(0.0, 1.4, t);
-  float fadeOut  = 1.0 - smoothstep(uDur - 2.0, uDur - 0.7, t);
+  float fadeIn   = smoothstep(0.2, 2.4, t);                  // up from black, negative peaks ~2 s
+  float fadeOut  = 1.0 - smoothstep(9.2, 11.35, t);          // black from 11.35 s to 12 s
   float vis      = fadeIn * fadeOut;
-  float sharpen  = smoothstep(0.4, 3.2, t);              // negative comes into focus
-  float develop  = clamp((t - 2.8) / (uDur - 4.8), 0.0, 1.0); // positive takes over
-  float blurOut  = smoothstep(uDur - 2.6, uDur - 0.8, t);
+  float sharpen  = smoothstep(1.0, 2.6, t);                  // negative comes into focus
+  float develop  = uDevelop;                                  // positive takes over
+  float blurOut  = smoothstep(9.2, 10.0, t);                 // fixed, even if still developing
 
   // --- developing front ---
-  float thresh = mix(-0.15, 1.65, develop);
-  float front = thresh - field;
+  float front = uThresh - field;
   float positive = smoothstep(-0.06, 0.10, front);
   float haze = exp(-pow(front / 0.16, 2.0)) * step(0.001, develop) * (1.0 - smoothstep(0.92, 1.0, develop));
   haze *= 0.55 + 0.45 * hazeN;
 
   // --- image ---
-  float zoom = 1.0 + 0.045 * (t / uDur);
+  float zoom = 1.0 + 0.045 * (t / 12.0);
   vec2 iuv = imageUv(uv, zoom);
   float blurPx = mix(22.0, 1.5, sharpen) + blurOut * 18.0;
   vec3 srcNeg = uHasTex > 0.5 ? sampleBlur(iuv, blurPx + haze * 3.0) : vec3(0.0);
@@ -330,7 +334,7 @@ function program(fragSrc, uniforms) {
   return { p, u: Object.fromEntries(uniforms.map((n) => [n, gl.getUniformLocation(p, n)])) };
 }
 
-const main = program(FRAG, ['uTex', 'uPlate0', 'uPlate1', 'uRes', 'uImg', 'uT', 'uDur', 'uSeed', 'uClock', 'uHasTex', 'uSoft']);
+const main = program(FRAG, ['uTex', 'uPlate0', 'uPlate1', 'uRes', 'uImg', 'uT', 'uDur', 'uSeed', 'uClock', 'uHasTex', 'uSoft', 'uDevelop', 'uThresh']);
 const bake = program(PLATE_FRAG, ['uRes', 'uSeed', 'uBorder', 'uEdge', 'uFx1', 'uFx2', 'uLeak', 'uBlobs']);
 
 const buf = gl.createBuffer();
@@ -385,7 +389,11 @@ function plateStyle(seed) {
     const pos = [[-out, along], [1 + out, along], [along, 1 + out], [along, -out]][side];
     blobs.push(pos[0], pos[1], between(0.04, kind === 'heavy' ? 0.15 : 0.08), 1);
   }
-  return { kind, border, edge, fx1, fx2, leak, blobs };
+  // How long the plate takes to develop varies a lot in the game (measured 4.6 s to over 10 s).
+  // The blur-out starts at 9.3 s regardless, so slow plates fade with some negative left.
+  const d = r();
+  const devEnd = FIXED_DEV ?? (d < 0.65 ? between(5.2, 6.6) : d < 0.9 ? between(6.6, 9.0) : between(9.0, 11.5));
+  return { kind, border, edge, fx1, fx2, leak, blobs, devEnd };
 }
 
 function makeTexture(mip) {
@@ -435,8 +443,73 @@ function bakePlate() {
   gl.uniform4fv(bake.u.uLeak, style.leak);
   gl.uniform4fv(bake.u.uBlobs, style.blobs);
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  measureField(w, h);
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   plateDirty = false;
+}
+
+// The front advances through the field's values. The field is noise, so its values are not
+// spread evenly: moving the threshold at a constant speed makes the front stall for seconds
+// and then jump. Instead, read the field back once per plate and advance by developed area.
+const SMALL = [192, 108];
+const smallTex = makeTexture(false);
+gl.bindTexture(gl.TEXTURE_2D, smallTex);
+gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, SMALL[0], SMALL[1], 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+const smallFbo = gl.createFramebuffer();
+gl.bindFramebuffer(gl.FRAMEBUFFER, smallFbo);
+gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, smallTex, 0);
+gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+const smallPixels = new Uint8Array(SMALL[0] * SMALL[1] * 4);
+let fieldSorted = new Float32Array([-0.15, 1.2]);
+
+function measureField(w, h) {
+  gl.bindFramebuffer(gl.READ_FRAMEBUFFER, plateFbo);
+  gl.readBuffer(gl.COLOR_ATTACHMENT1);
+  gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, smallFbo);
+  gl.blitFramebuffer(0, 0, w, h, 0, 0, SMALL[0], SMALL[1], gl.COLOR_BUFFER_BIT, gl.LINEAR);
+  gl.bindFramebuffer(gl.READ_FRAMEBUFFER, smallFbo);
+  gl.readPixels(0, 0, SMALL[0], SMALL[1], gl.RGBA, gl.UNSIGNED_BYTE, smallPixels);
+  // Weight the middle of the frame more: that is where the bright negative is seen,
+  // the dark edges barely register. Store values and cumulative weights.
+  const [W, H] = SMALL;
+  const items = [];
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const dx = (x / (W - 1) - 0.5) * 2, dy = (y / (H - 1) - 0.5) * 2;
+      const r = Math.hypot(dx, dy * 0.9);
+      const w = 0.15 + 0.85 * (1 - Math.min(1, Math.max(0, (r - 0.55) / 0.5)));
+      items.push([(smallPixels[(y * W + x) * 4] / 255) * 3 - 1, w]);
+    }
+  }
+  items.sort((a, b) => a[0] - b[0]);
+  const total = items.reduce((sum, it) => sum + it[1], 0);
+  // resample to 256 evenly weighted quantiles
+  const q = new Float32Array(256);
+  let acc = 0, j = 0;
+  for (let k = 0; k < q.length; k++) {
+    const target = (k / (q.length - 1)) * total;
+    while (j < items.length - 1 && acc + items[j][1] < target) acc += items[j++][1];
+    q[k] = items[j][0];
+  }
+  fieldSorted = q;
+  gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+  gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+}
+
+// Threshold at which `area` (0..1) of the plate has turned positive.
+function frontAt(area) {
+  const n = fieldSorted.length;
+  const lo = fieldSorted[0] - 0.12, hi = fieldSorted[n - 1] + 0.1;
+  if (area <= 0) return lo;
+  if (area >= 1) return hi;
+  const x = area * (n - 1), i = Math.floor(x);
+  const v = fieldSorted[i] + (fieldSorted[Math.min(i + 1, n - 1)] - fieldSorted[i]) * (x - i);
+  // the smoothstep in the shader needs a little lead to fully flip a pixel
+  return v + 0.02 + (hi - fieldSorted[n - 1]) * area;
+}
+
+function clamp01(x) {
+  return Math.min(1, Math.max(0, x));
 }
 
 let plateDirty = true;
@@ -548,6 +621,7 @@ function frame(nowMs) {
   }
 
   if (plateDirty) bakePlate();
+  const ts = (t * 12) / DURATION; // position on the 12 s reference timeline
   gl.viewport(0, 0, canvas.width, canvas.height);
   gl.useProgram(main.p);
   gl.activeTexture(gl.TEXTURE0);
@@ -567,11 +641,15 @@ function frame(nowMs) {
   gl.uniform1f(main.u.uClock, now);
   gl.uniform1f(main.u.uHasTex, current ? 1 : 0);
   gl.uniform1f(main.u.uSoft, style.edge[3]);
+  const develop = clamp01((ts - 2.1) / (style.devEnd - 2.1));
+  gl.uniform1f(main.u.uDevelop, develop);
+  gl.uniform1f(main.u.uThresh, frontAt(develop));
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
   // caption is written onto the plate once the positive has mostly come through
-  const capIn = smooth(DURATION * 0.45, DURATION * 0.62, t);
-  const capOut = 1 - smooth(DURATION - 2.0, DURATION - 0.9, t);
+  const capAt = Math.min(style.devEnd, 8.4);
+  const capIn = smooth(capAt - 1.2, capAt, ts);
+  const capOut = 1 - smooth(9.2, 10.4, ts);
   captionEl.style.opacity = current ? (capIn * capOut * 0.85).toFixed(3) : '0';
 
   requestAnimationFrame(frame);
