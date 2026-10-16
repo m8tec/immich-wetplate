@@ -28,20 +28,6 @@ html, body {
   white-space: nowrap;
 }
 
-#spinner {
-  position: fixed;
-  right: 3vw;
-  bottom: 4vh;
-  width: clamp(16px, 1.5vw, 28px);
-  height: clamp(16px, 1.5vw, 28px);
-  color: rgb(235 228 212 / 0.8);
-  animation: spin 3s linear infinite;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
 #status {
   position: fixed;
   left: 50%;

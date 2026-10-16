@@ -31,6 +31,7 @@ Create the API key in Immich under *Account Settings → API Keys*. It only need
 | `count=30` | Photos fetched per batch |
 | `t=5` | Freeze the cycle at this second, for tuning the look |
 | `img=<url>&caption=...` | Show a single image only |
+| `seed=0.42` | Use one fixed plate look (0–1) instead of a random one per photo |
 
 ## Timeline per photo (default 12.5 s)
 
@@ -41,5 +42,15 @@ Create the API key in Immich under *Account Settings → API Keys*. It only need
 | 2.8–~9 s | Positive develops from the edges inward, the negative lingers in the middle |
 | ~5.6–7.7 s | Handwritten note appears |
 | 9.9–11.8 s | Blur and fade to black |
+
+## Plate looks
+
+Each photo gets its own plate, generated from a random seed in `plateStyle()`:
+
+- **Thin**: a narrow, slightly chipped edge.
+- **Torn**: ragged lobes with a silvered rim and a peeled emulsion line.
+- **Heavy**: thick, blotchy, burnt borders with ink blobs eating into the image.
+
+On top of that, randomly: pour streaks, a dripping top edge, ink spatter, horizontal hairlines and a warm light leak. The border is part of the plate's density, so during the negative phase it shows up pale grey, as in the game.
 
 All timing and look parameters are in the fragment shader in `public/app.js`.
