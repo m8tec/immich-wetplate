@@ -12,10 +12,10 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = fileURLToPath(new URL('.', import.meta.url));
 const PUBLIC_DIR = join(ROOT, 'public');
-const PHOTOS_DIR = join(ROOT, 'photos');
-const MUSIC_DIR = join(ROOT, 'music');
-
 loadDotEnv(join(ROOT, '.env'));
+
+const PHOTOS_DIR = resolve(process.env.PHOTOS_DIR || join(ROOT, 'photos'));
+const MUSIC_DIR = resolve(process.env.MUSIC_DIR || join(ROOT, 'music'));
 
 const PORT = Number(process.env.PORT || 8787);
 const IMMICH_URL = (process.env.IMMICH_URL || '').replace(/\/+$/, '');
@@ -168,6 +168,9 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   const path = url.pathname;
   try {
+    if (path === '/health') {
+      return sendJson(res, 200, { ok: true, source: IMMICH_ENABLED ? 'immich' : 'local' });
+    }
     if (path === '/api/photos') {
       const count = Math.min(100, Math.max(1, Number(url.searchParams.get('count')) || 20));
       return sendJson(res, 200, await getPhotos(count));

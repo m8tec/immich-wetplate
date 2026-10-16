@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>immich-plate-loader</Name>
+  <Repository>ghcr.io/m8tec/immich-plate-loader:latest</Repository>
+  <Registry>https://ghcr.io/m8tec/immich-plate-loader</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/m8tec/immich-plate-loader/issues</Support>
+  <Project>https://github.com/m8tec/immich-plate-loader</Project>
+  <Overview>Diashow im Stil der Red-Dead-Redemption-2-Ladebildschirme: zufaellige Fotos aus deinem Immich entwickeln sich vom Negativ zur alten Sepia-Glasplatte, mit Ort und Datum als handschriftliche Notiz und optional Hintergrundmusik. Im Browser oeffnen, Klick oder F fuer Vollbild, M schaltet die Musik stumm. Ohne Immich-Zugang werden Fotos aus dem Foto-Ordner gezeigt. Mit Watchtower-Label fuer automatische Updates.</Overview>
+  <Category>MediaApp:Photos</Category>
+  <WebUI>http://[IP]:[PORT:8787]/</WebUI>
+  <TemplateURL/>
+  <Icon/>
+  <ExtraParams>--label com.centurylinklabs.watchtower.enable=true</ExtraParams>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires>Ein Immich-Server und ein API-Key mit den Rechten asset.read und asset.view (fuer ein Album zusaetzlich album.read).</Requires>
+  <Config Name="Port" Target="8787" Default="8787" Mode="tcp" Description="Web-Oberflaeche (Diashow) und /health" Type="Port" Display="always" Required="true" Mask="false">8787</Config>
+
+  <Config Name="IMMICH_URL" Target="IMMICH_URL" Default="" Mode="" Description="Adresse deines Immich-Servers, z.B. http://192.168.x.x:2283 (ohne /api)" Type="Variable" Display="always" Required="false" Mask="false"></Config>
+  <Config Name="IMMICH_API_KEY" Target="IMMICH_API_KEY" Default="" Mode="" Description="API-Key aus Immich (Kontoeinstellungen, API-Schluessel) mit den Rechten asset.read und asset.view" Type="Variable" Display="always" Required="false" Mask="true"></Config>
+  <Config Name="IMMICH_ALBUM_ID" Target="IMMICH_ALBUM_ID" Default="" Mode="" Description="Optional: nur Fotos aus diesem Album (ID aus der Album-URL in Immich). Braucht zusaetzlich album.read. Leer = ganze Zeitleiste ohne Archiv, versteckte und gesperrte Fotos." Type="Variable" Display="always" Required="false" Mask="false"></Config>
+
+  <Config Name="Musik" Target="/music" Default="/mnt/user/appdata/immich-plate-loader/music" Mode="ro" Description="Ordner mit Hintergrundmusik (mp3, m4a, ogg, wav), wird in Namensreihenfolge in Schleife gespielt. Leer lassen = keine Musik." Type="Path" Display="always" Required="false" Mask="false">/mnt/user/appdata/immich-plate-loader/music</Config>
+  <Config Name="Fotos" Target="/photos" Default="/mnt/user/appdata/immich-plate-loader/photos" Mode="ro" Description="Nur ohne Immich: Ordner mit Fotos (jpg, png, webp, avif, gif). Ist auch der leer, kommen Demo-Bilder aus dem Internet." Type="Path" Display="advanced" Required="false" Mask="false">/mnt/user/appdata/immich-plate-loader/photos</Config>
+</Container>

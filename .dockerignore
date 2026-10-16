@@ -1,0 +1,10 @@
+.git
+.github
+.env
+.env.*
+node_modules
+photos
+music
+*.xml
+README.md
+.DS_Store

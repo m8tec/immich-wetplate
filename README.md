@@ -13,6 +13,22 @@ npm start
 
 Then open http://localhost:8787. Click or press `F` for fullscreen.
 
+## Docker and Unraid
+
+Every push to `main` that touches the app builds an image and pushes it to `ghcr.io/m8tec/immich-plate-loader` with the tags `latest` and the commit SHA (`.github/workflows/docker-build.yml`).
+
+```bash
+docker run -d -p 8787:8787 \
+  -e IMMICH_URL=http://192.168.x.x:2283 \
+  -e IMMICH_API_KEY=... \
+  -v /path/to/music:/music:ro \
+  ghcr.io/m8tec/immich-plate-loader:latest
+```
+
+In the container, photos come from `/photos` and music from `/music` (`PHOTOS_DIR` and `MUSIC_DIR` change that). `GET /health` reports the photo source.
+
+For Unraid, `immich-plate-loader.xml` is a ready template: copy it to `/boot/config/plugins/dockerMan/templates-user/` on the Unraid flash drive, then pick it under *Docker → Add Container → Template*. The template carries the Watchtower label for automatic updates. GHCR packages start out private: either make the package public on GitHub, or log in on Unraid with `docker login ghcr.io` using a token with `read:packages`.
+
 ## Photo sources
 
 The server picks the first source that is available:
