@@ -21,7 +21,7 @@ The server picks the first source that is available:
 2. **Local folder**: image files in `./photos`. The note shows the file name.
 3. **Demo**: random images from picsum.photos.
 
-Create the API key in Immich under *Account Settings → API Keys*. It only needs read access to assets, plus albums if you use an album.
+Create the API key in Immich under *Account Settings → API Keys*. It needs the permissions `asset.read` and `asset.view`, plus `album.read` if you use an album. Only photos from the timeline are shown: archived, hidden and locked-folder photos are left out. Tested against Immich 3.2.
 
 ## Background music
 

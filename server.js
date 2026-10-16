@@ -105,7 +105,8 @@ function immichCaption(asset) {
 }
 
 async function immichPhotos(count) {
-  const body = { size: count, type: 'IMAGE', withExif: true };
+  // timeline only: never archived, hidden or locked-folder photos
+  const body = { size: count, type: 'IMAGE', visibility: 'timeline', withExif: true };
   if (IMMICH_ALBUM_ID) body.albumIds = [IMMICH_ALBUM_ID];
   const r = await fetch(`${IMMICH_URL}/api/search/random`, {
     method: 'POST',
