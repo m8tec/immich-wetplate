@@ -78,6 +78,8 @@ uniform vec4 uFx1;      // silver rim, pour streaks, dripping top edge, mottle
 uniform vec4 uFx2;      // spatter amount, spatter x, spatter y, hairlines
 uniform vec4 uLeak;     // light leak x, y, radius, strength
 uniform vec4 uBlobs[4]; // ink blobs eating into the plate: x, y (uv), radius, on/off
+uniform sampler2D uTex; // the photo, so the development can follow it
+uniform vec2 uImg;
 ${NOISE}
 float smin(float a, float b, float k) {
   float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
@@ -123,9 +125,21 @@ void main() {
   vec2 q = uv * vec2(aspect, 1.0);
   vec2 sd = vec2(uSeed * 13.7, uSeed * 7.3);
 
-  // developing front: high in the middle and noisy; the positive wins wherever field < threshold
+  // Developing order: the positive wins wherever field < threshold. As in the game, it follows
+  // the picture: bright parts of the positive (the most exposed silver) come up first, deep
+  // shadows (bright white in the negative) last. Large soft noise and a slight pull towards the
+  // edges keep it from looking mechanical.
+  float ca = uRes.x / uRes.y, ia = uImg.x / uImg.y;
+  vec2 fit = ca > ia ? vec2(1.0, ia / ca) : vec2(ca / ia, 1.0);
+  vec2 iuv = (uv - 0.5) * fit + 0.5;
+  iuv.y = 1.0 - iuv.y;
+  float lumBig = dot(textureLod(uTex, iuv, 5.5).rgb, vec3(0.299, 0.587, 0.114));
+  float lumMid = dot(textureLod(uTex, iuv, 3.5).rgb, vec3(0.299, 0.587, 0.114));
   float r = length((uv - 0.5) * vec2(1.0, 1.25)) * 1.55;
-  float field = 1.0 - r * 0.8 + (fbm(q * 2.4 + sd) - 0.5) * 1.1 + (fbm(q * 7.0 - sd) - 0.5) * 0.25;
+  float field = 0.75 - r * 0.35
+              - (mix(lumBig, lumMid, 0.35) - 0.5) * 1.0
+              + (fbm(q * 1.6 + sd) - 0.5) * 0.7
+              + (fbm(q * 6.0 - sd) - 0.5) * 0.15;
   float hazeN = fbm(q * 11.0 + sd);
 
   // Plate density. The negative shows it inverted too, so the black border
@@ -270,8 +284,9 @@ void main() {
 
   // --- developing front ---
   float front = uThresh - field;
-  float positive = smoothstep(-0.06, 0.10, front);
-  float haze = exp(-pow(front / 0.16, 2.0)) * step(0.001, develop) * (1.0 - smoothstep(0.92, 1.0, develop));
+  // wide, soft transition: positive and negative overlap for a while, like a slow dissolve
+  float positive = smoothstep(-0.13, 0.13, front);
+  float haze = exp(-pow(front / 0.2, 2.0)) * step(0.001, develop) * (1.0 - smoothstep(0.92, 1.0, develop));
   haze *= 0.55 + 0.45 * hazeN;
 
   // --- image ---
@@ -287,10 +302,13 @@ void main() {
   // negative: inverted, low contrast, cool grey, washed out at first
   float lnBase = clamp(luma(srcNeg) * mul + add, 0.0, 1.0);
   lnBase = mix(lnBase, 0.02, spatter);
-  lnBase = mix(0.03, lnBase, inside);
+  // in the negative the border is a soft, light grey, not a hard white frame
+  float insideNeg = smoothstep(-soft - 0.02, soft + 0.02, d);
+  lnBase = mix(0.3, lnBase, insideNeg);
   float ln = 1.0 - lnBase;
   ln = mix(0.62, ln, mix(0.35, 0.95, sharpen));
-  ln = mix(ln, smoothstep(0.1, 0.9, ln) * 1.08, sharpen * 0.6);
+  ln = mix(ln, smoothstep(0.1, 0.9, ln), sharpen * 0.3);
+  ln = mix(ln, 0.5, develop * 0.25); // the whole negative greys down as it develops
   vec3 negCol = vec3(ln) * vec3(0.93, 0.94, 0.96);
 
   // positive: sepia, warm light leak, border near black (~#0a0a0a at most)
@@ -335,7 +353,7 @@ function program(fragSrc, uniforms) {
 }
 
 const main = program(FRAG, ['uTex', 'uPlate0', 'uPlate1', 'uRes', 'uImg', 'uT', 'uDur', 'uSeed', 'uClock', 'uHasTex', 'uSoft', 'uDevelop', 'uThresh']);
-const bake = program(PLATE_FRAG, ['uRes', 'uSeed', 'uBorder', 'uEdge', 'uFx1', 'uFx2', 'uLeak', 'uBlobs']);
+const bake = program(PLATE_FRAG, ['uRes', 'uSeed', 'uBorder', 'uEdge', 'uFx1', 'uFx2', 'uLeak', 'uBlobs', 'uTex', 'uImg']);
 
 const buf = gl.createBuffer();
 gl.bindBuffer(gl.ARRAY_BUFFER, buf);
@@ -434,6 +452,10 @@ function bakePlate() {
   gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
   gl.viewport(0, 0, w, h);
   gl.useProgram(bake.p);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.uniform1i(bake.u.uTex, 0);
+  gl.uniform2f(bake.u.uImg, current?.img.width || 1, current?.img.height || 1);
   gl.uniform2f(bake.u.uRes, w, h);
   gl.uniform1f(bake.u.uSeed, seed);
   gl.uniform4fv(bake.u.uBorder, style.border);
@@ -477,7 +499,7 @@ function measureField(w, h) {
     for (let x = 0; x < W; x++) {
       const dx = (x / (W - 1) - 0.5) * 2, dy = (y / (H - 1) - 0.5) * 2;
       const r = Math.hypot(dx, dy * 0.9);
-      const w = 0.15 + 0.85 * (1 - Math.min(1, Math.max(0, (r - 0.55) / 0.5)));
+      const w = 0.4 + 0.6 * (1 - Math.min(1, Math.max(0, (r - 0.55) / 0.5)));
       items.push([(smallPixels[(y * W + x) * 4] / 255) * 3 - 1, w]);
     }
   }
@@ -499,13 +521,13 @@ function measureField(w, h) {
 // Threshold at which `area` (0..1) of the plate has turned positive.
 function frontAt(area) {
   const n = fieldSorted.length;
-  const lo = fieldSorted[0] - 0.12, hi = fieldSorted[n - 1] + 0.1;
+  // the shader's transition is ±0.13 wide, so lead/lag by that much at the ends
+  const lo = fieldSorted[0] - 0.15, hi = fieldSorted[n - 1] + 0.15;
   if (area <= 0) return lo;
   if (area >= 1) return hi;
   const x = area * (n - 1), i = Math.floor(x);
   const v = fieldSorted[i] + (fieldSorted[Math.min(i + 1, n - 1)] - fieldSorted[i]) * (x - i);
-  // the smoothstep in the shader needs a little lead to fully flip a pixel
-  return v + 0.02 + (hi - fieldSorted[n - 1]) * area;
+  return v + 0.15 * (2 * area - 1);
 }
 
 function clamp01(x) {
