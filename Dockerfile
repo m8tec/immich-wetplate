@@ -6,7 +6,7 @@ WORKDIR /app
 COPY package.json server.js ./
 COPY public/ ./public/
 
-# Photos and music come from mounted folders (see immich-plate-loader.xml)
+# Photos and music come from mounted folders (see immich-wetplate.xml)
 ENV NODE_ENV=production \
     PORT=8787 \
     PHOTOS_DIR=/photos \

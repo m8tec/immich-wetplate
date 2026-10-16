@@ -1,4 +1,4 @@
-name: Build and push immich-plate-loader image
+name: Build and push immich-wetplate image
 
 on:
   push:

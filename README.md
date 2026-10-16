@@ -1,6 +1,6 @@
-# immich-plate-loader
+# immich-wetplate
 
-A loading-screen style slideshow for your [Immich](https://immich.app) library, modelled on the Red Dead Redemption 2 story-mode loading screens: each photo appears as a blurry negative, then develops into a sepia wet-plate photograph from the edges inward through a smoky front, holds for a moment, and fades to black.
+A loading-screen style slideshow for your [Immich](https://immich.app) library, modelled on the Red Dead Redemption 2 story-mode loading screens: each photo appears as a blurry negative, then develops into a sepia wet-plate photograph (the collodion glass plates of the 19th century), bright parts first, through a smoky front, holds for a moment, and fades to black.
 
 Everything runs in the browser as a WebGL2 shader. A small Node server with no dependencies serves the page and talks to Immich, so the browser needs no CORS setup and never sees your API key.
 
@@ -15,19 +15,19 @@ Then open http://localhost:8787. Click or press `F` for fullscreen.
 
 ## Docker and Unraid
 
-Every push to `main` that touches the app builds an image and pushes it to `ghcr.io/m8tec/immich-plate-loader` with the tags `latest` and the commit SHA (`.github/workflows/docker-build.yml`).
+Every push to `main` that touches the app builds an image and pushes it to `ghcr.io/m8tec/immich-wetplate` with the tags `latest` and the commit SHA (`.github/workflows/docker-build.yml`).
 
 ```bash
 docker run -d -p 8787:8787 \
   -e IMMICH_URL=http://192.168.x.x:2283 \
   -e IMMICH_API_KEY=... \
   -v /path/to/music:/music:ro \
-  ghcr.io/m8tec/immich-plate-loader:latest
+  ghcr.io/m8tec/immich-wetplate:latest
 ```
 
 In the container, photos come from `/photos` and music from `/music` (`PHOTOS_DIR` and `MUSIC_DIR` change that). `GET /health` reports the photo source.
 
-For Unraid, `immich-plate-loader.xml` is a ready template: copy it to `/boot/config/plugins/dockerMan/templates-user/` on the Unraid flash drive, then pick it under *Docker → Add Container → Template*. The template carries the Watchtower label for automatic updates. GHCR packages start out private: either make the package public on GitHub, or log in on Unraid with `docker login ghcr.io` using a token with `read:packages`.
+For Unraid, `immich-wetplate.xml` is a ready template: copy it to `/boot/config/plugins/dockerMan/templates-user/` on the Unraid flash drive, then pick it under *Docker → Add Container → Template*. The template carries the Watchtower label for automatic updates. GHCR packages start out private: either make the package public on GitHub, or log in on Unraid with `docker login ghcr.io` using a token with `read:packages`.
 
 ## Photo sources
 

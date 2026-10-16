@@ -203,5 +203,5 @@ const server = createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   const source = IMMICH_ENABLED ? `Immich (${IMMICH_URL}${IMMICH_ALBUM_ID ? ', album ' + IMMICH_ALBUM_ID : ''})` : 'local ./photos or demo images';
-  console.log(`Plate loader on http://localhost:${PORT}  —  source: ${source}`);
+  console.log(`Wetplate on http://localhost:${PORT}  —  source: ${source}`);
 });

@@ -1,5 +1,5 @@
 {
-  "name": "immich-plate-loader",
+  "name": "immich-wetplate",
   "version": "0.1.0",
   "description": "RDR2-style developing-photo loading screen for your Immich library",
   "type": "module",
