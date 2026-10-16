@@ -54,6 +54,6 @@ Each photo gets its own plate, generated from a random seed in `plateStyle()`:
 - **Torn**: ragged lobes with a silvered rim and a peeled emulsion line.
 - **Heavy**: thick, blotchy, burnt borders with ink blobs eating into the image.
 
-On top of that, randomly: pour streaks, a dripping top edge, ink spatter, horizontal hairlines and a warm light leak. The border is part of the plate's density, so during the negative phase it shows up pale grey, as in the game.
+On top of that, randomly: pour streaks, a dripping top edge, ink spatter, horizontal hairlines and a warm light leak. Dust, drops, scratches, streaks and grain clumps belong to the wet, undeveloped plate: they show in the negative and fade out wherever the positive comes through. The border is part of the plate's density, so during the negative phase it shows up pale grey, as in the game.
 
 All timing and look parameters are in the fragment shader in `public/app.js`.

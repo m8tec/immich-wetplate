@@ -62,7 +62,7 @@ float fbm(vec2 p) {
 
 // Pass 1, once per photo: bakes everything about the plate that does not change over time
 // into two textures, so the per-frame pass stays cheap.
-//   plate0 = (tone multiplier / 2, tone offset + 0.5, (edge distance + 0.1) / 0.4, ink spatter)
+//   plate0 = (tone multiplier / 2, tone offset + 0.5, (edge distance + 0.1) / 0.4, (wet artifacts + 1) / 2)
 //   plate1 = ((developing field + 1) / 3, haze noise, light leak, border texture)
 const PLATE_FRAG = `#version 300 es
 precision highp float;
@@ -145,11 +145,16 @@ void main() {
   // Plate density. The negative shows it inverted too, so the black border
   // reads as pale grey until the positive comes through.
   float mul = 1.0, add = 0.0;
+  // "Wet" artifacts (dust, drops, scratches, pour streaks, grain clumps) belong to the
+  // undeveloped plate: they show in the negative and fade where the positive comes through.
+  float wet = 0.0;
 
   // uneven tone and mottled emulsion
   mul *= 0.84 + 0.3 * fbm(q * vec2(1.6, 3.2) + sd * 2.0);
-  float mottle = smoothstep(0.5, 0.75, fbm(q * 2.5 + sd * 1.7)) * (hash(floor(q * 1080.0 / 2.5) + sd) - 0.5);
-  add += mottle * 0.35 * uFx1.w;
+  // soft, clumpy emulsion grain (smooth noise, no hard pixel blocks), in patches
+  float clump = (vnoise(q * 320.0 + sd) - 0.5) * 0.6 + (vnoise(q * 750.0 - sd) - 0.5) * 0.4;
+  float mottle = smoothstep(0.5, 0.75, fbm(q * 2.5 + sd * 1.7)) * clump;
+  wet += mottle * 0.3 * uFx1.w;
 
   // pour streaks: wavy vertical lines where the collodion ran
   float wx = q.x + (fbm(vec2(q.x * 4.0, uv.y * 2.2) + sd) - 0.5) * 0.07
@@ -160,7 +165,7 @@ void main() {
   float streak = smoothstep(lw, lw * 0.3, lane) * step(0.4, hash(vec2(laneId, uSeed)));
   float streakSign = hash(vec2(laneId, uSeed + 9.0)) < 0.65 ? 1.0 : -1.4;
   float streakFade = smoothstep(0.0, 0.8, uv.y) * smoothstep(0.2, 0.7, vnoise(vec2(laneId * 1.7, uv.y * 3.0 + uSeed)));
-  add += streak * streakFade * streakSign * 0.07 * uFx1.y;
+  wet += streak * streakFade * streakSign * 0.07 * uFx1.y;
   mul *= 1.0 + (vnoise(vec2(wx * 8.0, uSeed)) - 0.5) * 0.3 * uFx1.y;
 
   // vignette
@@ -176,21 +181,21 @@ void main() {
   float dotR = 0.06 + 0.42 * pow(hash(cellId + 7.7), 3.0);
   vec2 dotUv = cellUv + (hash(cellId + 2.0) - 0.5) * 0.4 + (vec2(vnoise(q * 160.0), vnoise(q * 160.0 + 5.0)) - 0.5) * 0.35;
   float dotHit = step(1.0 - 0.2 * exp(-spd * spd / 0.025), hs) * smoothstep(dotR, dotR * 0.6, length(dotUv * vec2(1.0, 0.8)));
-  float spatter = dotHit * uFx2.x;
+  wet -= dotHit * uFx2.x; // ink drops: pushes the density to black
 
   // dust: pale specks and darker crumbs
   vec2 dcell = floor(q * 90.0);
   float dd = length(fract(q * 90.0) - 0.5);
   float speckW = step(0.9965, hash(dcell + sd)) * smoothstep(0.45, 0.1, dd);
   float speckB = step(0.9975, hash(dcell - sd)) * smoothstep(0.4, 0.15, dd);
-  add += speckW * 0.35 - speckB * 0.3;
+  wet += speckW * 0.35 - speckB * 0.3;
 
   // scratches: vertical and horizontal hairlines
   float sx = step(0.997, hash(vec2(floor(uv.x * 420.0), uSeed)))
            * smoothstep(0.3, 0.8, vnoise(vec2(uv.x * 420.0, uv.y * 3.0 + uSeed * 9.0)));
   float sy = step(0.995, hash(vec2(floor(uv.y * 300.0), uSeed + 1.0)))
            * smoothstep(0.55, 0.85, vnoise(vec2(q.x * 2.5 + uSeed * 4.0, uv.y * 300.0)));
-  add += sx * 0.18 + sy * 0.22 * uFx2.w;
+  wet += sx * 0.18 + sy * 0.22 * uFx2.w;
 
   // border: burnt falloff, darker corners, silvered rim and a peeled emulsion line
   float d = plateDist(uv, q, aspect);
@@ -206,7 +211,7 @@ void main() {
 
   float leak = exp(-pow(length(q - uLeak.xy * vec2(aspect, 1.0)) / max(uLeak.z, 0.01), 2.0)) * uLeak.w;
 
-  plate0 = vec4(mul * 0.5, add + 0.5, (d + 0.1) / 0.4, spatter);
+  plate0 = vec4(mul * 0.5, add + 0.5, (d + 0.1) / 0.4, clamp(wet, -1.0, 1.0) * 0.5 + 0.5);
   plate1 = vec4((field + 1.0) / 3.0, hazeN, leak, fbm(q * 18.0 + sd));
 }`;
 
@@ -271,7 +276,7 @@ void main() {
   float t = uT * 12.0 / uDur;
   vec4 p0 = texture(uPlate0, uv);
   vec4 p1 = texture(uPlate1, uv);
-  float mul = p0.r * 2.0, add = p0.g - 0.5, d = p0.b * 0.4 - 0.1, spatter = p0.a;
+  float mul = p0.r * 2.0, add = p0.g - 0.5, d = p0.b * 0.4 - 0.1, wet = p0.a * 2.0 - 1.0;
   float field = p1.r * 3.0 - 1.0, hazeN = p1.g, leak = p1.b, borderN = p1.a;
 
   // --- timeline ---
@@ -300,8 +305,7 @@ void main() {
   float inside = smoothstep(-soft, soft, d);
 
   // negative: inverted, low contrast, cool grey, washed out at first
-  float lnBase = clamp(luma(srcNeg) * mul + add, 0.0, 1.0);
-  lnBase = mix(lnBase, 0.02, spatter);
+  float lnBase = clamp(luma(srcNeg) * mul + add + wet, 0.0, 1.0);
   // in the negative the border is a soft, light grey, not a hard white frame
   float insideNeg = smoothstep(-soft - 0.02, soft + 0.02, d);
   lnBase = mix(0.3, lnBase, insideNeg);
@@ -315,8 +319,9 @@ void main() {
   float lp = luma(srcPos);
   lp = smoothstep(0.03, 0.97, lp);
   lp = pow(lp, 1.15);
-  lp = clamp(lp * mul + add, 0.0, 1.0);
-  lp = mix(lp, 0.0, spatter);
+  // wet artifacts linger only where the plate is still developing
+  float wetMask = clamp(1.0 - positive + haze * 0.6, 0.0, 1.0);
+  lp = clamp(lp * mul + add + wet * wetMask, 0.0, 1.0);
   vec3 posCol = sepia(lp) + vec3(0.22, 0.16, 0.04) * leak;
   vec3 borderCol = vec3(0.016, 0.015, 0.014) * (0.6 + 0.8 * borderN);
   posCol = mix(borderCol, posCol, inside);
@@ -327,8 +332,10 @@ void main() {
   col = mix(col, vec3(0.78, 0.77, 0.74), haze * 0.4 * inside);
 
   // film grain, faint in the blacks so the border stays dark
-  float g = hash(uv * uRes + fract(uClock * 7.13) * 100.0) - 0.5;
-  col += g * 0.055 * mix(0.15, 1.0, smoothstep(0.02, 0.25, luma(col)));
+  // fine film grain: two hashes averaged for a softer, less salty distribution
+  vec2 gp = floor(uv * uRes) + floor(fract(uClock * 7.13) * 977.0);
+  float g = (hash(gp) + hash(gp + 31.7)) * 0.5 - 0.5;
+  col += g * 0.06 * mix(0.15, 1.0, smoothstep(0.02, 0.25, luma(col)));
 
   col *= vis;
   outColor = vec4(max(col, 0.0), 1.0);
@@ -424,6 +431,12 @@ function makeTexture(mip) {
   return t;
 }
 
+// Half-float plate layers where the browser can render to them: 8 bits show as contour
+// bands in smooth gradients.
+const PLATE_FMT = gl.getExtension('EXT_color_buffer_float')
+  ? { internal: gl.RGBA16F, type: gl.HALF_FLOAT, float: true }
+  : { internal: gl.RGBA8, type: gl.UNSIGNED_BYTE, float: false };
+
 const tex = makeTexture(true);
 const plateTex = [makeTexture(false), makeTexture(false)];
 const plateFbo = gl.createFramebuffer();
@@ -442,7 +455,7 @@ function bakePlate() {
   if (w !== plateSize[0] || h !== plateSize[1]) {
     for (const t of plateTex) {
       gl.bindTexture(gl.TEXTURE_2D, t);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      gl.texImage2D(gl.TEXTURE_2D, 0, PLATE_FMT.internal, w, h, 0, gl.RGBA, PLATE_FMT.type, null);
     }
     plateSize = [w, h];
   }
@@ -476,12 +489,12 @@ function bakePlate() {
 const SMALL = [192, 108];
 const smallTex = makeTexture(false);
 gl.bindTexture(gl.TEXTURE_2D, smallTex);
-gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, SMALL[0], SMALL[1], 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+gl.texImage2D(gl.TEXTURE_2D, 0, PLATE_FMT.internal, SMALL[0], SMALL[1], 0, gl.RGBA, PLATE_FMT.type, null);
 const smallFbo = gl.createFramebuffer();
 gl.bindFramebuffer(gl.FRAMEBUFFER, smallFbo);
 gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, smallTex, 0);
 gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-const smallPixels = new Uint8Array(SMALL[0] * SMALL[1] * 4);
+const smallPixels = PLATE_FMT.float ? new Float32Array(SMALL[0] * SMALL[1] * 4) : new Uint8Array(SMALL[0] * SMALL[1] * 4);
 let fieldCdf = Float64Array.from({ length: 257 }, (_, i) => i / 256);
 
 function measureField(w, h) {
@@ -490,18 +503,19 @@ function measureField(w, h) {
   gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, smallFbo);
   gl.blitFramebuffer(0, 0, w, h, 0, 0, SMALL[0], SMALL[1], gl.COLOR_BUFFER_BIT, gl.LINEAR);
   gl.bindFramebuffer(gl.READ_FRAMEBUFFER, smallFbo);
-  gl.readPixels(0, 0, SMALL[0], SMALL[1], gl.RGBA, gl.UNSIGNED_BYTE, smallPixels);
+  gl.readPixels(0, 0, SMALL[0], SMALL[1], gl.RGBA, PLATE_FMT.float ? gl.FLOAT : gl.UNSIGNED_BYTE, smallPixels);
+  const toLevel = PLATE_FMT.float ? (v) => Math.min(255, Math.max(0, Math.round(v * 255))) : (v) => v;
   // Weight the middle of the frame more: that is where the bright negative is seen,
-  // the dark edges barely register. The field is stored in 8 bits, so build a weighted
-  // histogram over its 256 levels and treat each level as spread evenly across its width;
-  // sorting the raw values instead gives runs of equal quantiles and a front that halts and jumps.
+  // the dark edges barely register. Bin the field into a weighted histogram of 256 levels and
+  // treat each level as spread evenly across its width; sorting raw (possibly 8-bit) values
+  // instead gives runs of equal quantiles and a front that halts and jumps.
   const [W, H] = SMALL;
   const hist = new Float64Array(256);
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       const dx = (x / (W - 1) - 0.5) * 2, dy = (y / (H - 1) - 0.5) * 2;
       const r = Math.hypot(dx, dy * 0.9);
-      hist[smallPixels[(y * W + x) * 4]] += 0.4 + 0.6 * (1 - Math.min(1, Math.max(0, (r - 0.55) / 0.5)));
+      hist[toLevel(smallPixels[(y * W + x) * 4])] += 0.4 + 0.6 * (1 - Math.min(1, Math.max(0, (r - 0.55) / 0.5)));
     }
   }
   const cdf = new Float64Array(257);
