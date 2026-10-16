@@ -8,12 +8,15 @@
 //             ?count=30       photos fetched per batch
 //             ?img=<url>      show only this image (&caption=... for the note)
 //             ?seed=0.42      fixed plate look (0..1)
+//             ?artifacts=1    keep plate artifacts visible on the positive (tuning)
+//             ?music=0        no background music (M toggles it while running)
 
 const params = new URLSearchParams(location.search);
 const DURATION = Number(params.get('duration')) || 12;
 const FREEZE = params.has('t') ? Number(params.get('t')) : null;
 const BATCH = Number(params.get('count')) || 30;
 const FIXED_IMG = params.get('img'); // show only this image (for tuning)
+const WET_DEBUG = params.get('artifacts') === '1'; // keep plate artifacts on the positive
 const FIXED_DEV = params.has('dev') ? Number(params.get('dev')) : null;
 const FIXED_SEED = params.has('seed') ? Number(params.get('seed')) : null; // reuse one plate look
 
@@ -156,21 +159,59 @@ void main() {
   float mottle = smoothstep(0.5, 0.75, fbm(q * 2.5 + sd * 1.7)) * clump;
   wet += mottle * 0.3 * uFx1.w;
 
-  // pour streaks: wavy vertical lines where the collodion ran
-  float wx = q.x + (fbm(vec2(q.x * 4.0, uv.y * 2.2) + sd) - 0.5) * 0.07
-                 + (vnoise(vec2(q.x * 30.0, uv.y * 9.0 + uSeed)) - 0.5) * 0.006;
-  float laneId = floor(wx * 22.0);
-  float lane = abs(fract(wx * 22.0) - 0.5);
-  float lw = mix(0.02, 0.14, hash(vec2(laneId, uSeed + 3.0)));
-  float streak = smoothstep(lw, lw * 0.3, lane) * step(0.4, hash(vec2(laneId, uSeed)));
-  float streakSign = hash(vec2(laneId, uSeed + 9.0)) < 0.65 ? 1.0 : -1.4;
-  float streakFade = smoothstep(0.0, 0.8, uv.y) * smoothstep(0.2, 0.7, vnoise(vec2(laneId * 1.7, uv.y * 3.0 + uSeed)));
-  wet += streak * streakFade * streakSign * 0.07 * uFx1.y;
-  mul *= 1.0 + (vnoise(vec2(wx * 8.0, uSeed)) - 0.5) * 0.3 * uFx1.y;
+  float px = 1.0 / uRes.y; // one bake pixel in q units
 
   // vignette
   float v = length((uv - 0.5) * vec2(1.05, 1.25));
   mul *= 1.0 - smoothstep(0.32, 0.85, v) * 0.7;
+
+  // pour lines: where the collodion ran, thin wavy vertical contours (a light edge with a
+  // dark shoulder), strongest at the top, plus faint tonal lanes between them
+  float wx = q.x + (fbm(vec2(q.x * 4.0, uv.y * 2.2) + sd) - 0.5) * 0.06
+                 + (vnoise(vec2(q.x * 18.0, uv.y * 6.0 + uSeed)) - 0.5) * 0.022
+                 + (vnoise(vec2(q.x * 60.0, uv.y * 14.0 - uSeed)) - 0.5) * 0.004;
+  float K = 30.0;
+  // each border wanders on its own, so lanes bulge, pinch and almost touch like real runs
+  float laneId = floor(wx * K);
+  float dxE = 1.0, edgeId = laneId;
+  for (int i = -1; i <= 2; i++) {
+    float e = laneId + float(i);
+    float wob = (vnoise(vec2(e * 7.13, uv.y * (2.5 + 3.0 * hash(vec2(e, 1.0))) + uSeed)) - 0.5) * 1.3
+              + (vnoise(vec2(e * 3.7, uv.y * 11.0 - uSeed)) - 0.5) * 0.25;
+    float dxi = wx - (e + wob) / K;
+    if (abs(dxi) < abs(dxE)) { dxE = dxi; edgeId = e; }
+  }
+  float drawn = step(0.3, hash(vec2(edgeId, uSeed)));
+  float pourFade = smoothstep(0.1, 0.85, uv.y) * smoothstep(0.15, 0.6, vnoise(vec2(edgeId * 1.7, uv.y * 2.5 + uSeed)));
+  float pourAmt = uFx1.y * drawn * pourFade;
+  float core = exp(-pow(dxE / (1.2 * px), 2.0));
+  float shoulder = exp(-pow((dxE - 2.6 * px) / (1.6 * px), 2.0));
+  wet += (core * 0.12 - shoulder * 0.1) * pourAmt;
+  // the lanes between the borders carry slightly different tone
+  float laneTone = hash(vec2(dxE > 0.0 ? edgeId : edgeId - 1.0, uSeed + 3.0)) - 0.5;
+  wet += laneTone * 0.16 * uFx1.y * smoothstep(0.1, 0.85, uv.y);
+
+  // bubbles: small rings with a bright rim, in chains along the pour lines and scattered
+  float cs = 0.009;
+  float cy = floor(uv.y / cs);
+  float bh = hash(vec2(edgeId * 3.1, cy + uSeed * 17.0));
+  float br = cs * (0.08 + 0.22 * hash(vec2(edgeId, cy + 5.0)));
+  vec2 bp = vec2(dxE - (hash(vec2(edgeId, cy)) - 0.5) * 3.0 * px, (fract(uv.y / cs) - 0.5) * cs);
+  float ringD = abs(length(bp) - br);
+  float chain = step(0.7, bh) * pourAmt;
+  wet += (exp(-pow(ringD / (0.9 * px), 2.0)) * 0.22 - step(length(bp), br) * 0.04) * chain;
+  vec2 bc = floor(q * 48.0);
+  vec2 bu = (fract(q * 48.0) - 0.5) / 48.0 + (vec2(hash(bc + 1.3), hash(bc + 4.7)) - 0.5) * 0.008;
+  float br2 = (0.0012 + 0.0045 * pow(hash(bc + 9.1), 2.0));
+  float scat = step(0.9, hash(bc + sd * 5.0)) * smoothstep(0.35, 0.65, fbm(q * 2.0 - sd)) * max(uFx1.y, 0.35);
+  float ring2 = exp(-pow(abs(length(bu) - br2) / (0.8 * px), 2.0));
+  wet += (ring2 * 0.2 - step(length(bu), br2) * 0.03) * scat;
+
+  // pitting: dense, irregular dark blotches in patches, like corroded silver, with pale flecks
+  float pitPatch = smoothstep(0.52, 0.72, fbm(q * 1.8 + sd * 5.0)) * (0.3 + 0.7 * uFx1.w);
+  float pits = smoothstep(0.7, 0.77, vnoise(q * 420.0 + sd * 2.0) * 0.6 + vnoise(q * 1100.0 - sd) * 0.4);
+  float flecks = smoothstep(0.85, 0.88, vnoise(q * 700.0 + sd));
+  wet += (flecks * 0.14 - pits * 0.18) * pitPatch;
 
   // ink spatter, clustered around one point
   vec2 spc = uFx2.yz * vec2(aspect, 1.0);
@@ -183,19 +224,29 @@ void main() {
   float dotHit = step(1.0 - 0.2 * exp(-spd * spd / 0.025), hs) * smoothstep(dotR, dotR * 0.6, length(dotUv * vec2(1.0, 0.8)));
   wet -= dotHit * uFx2.x; // ink drops: pushes the density to black
 
-  // dust: pale specks and darker crumbs
-  vec2 dcell = floor(q * 90.0);
-  float dd = length(fract(q * 90.0) - 0.5);
-  float speckW = step(0.9965, hash(dcell + sd)) * smoothstep(0.45, 0.1, dd);
-  float speckB = step(0.9975, hash(dcell - sd)) * smoothstep(0.4, 0.15, dd);
-  wet += speckW * 0.35 - speckB * 0.3;
+  // dust: small dark dots with a faint pale halo, and white lint specks
+  vec2 dcell = floor(q * 75.0);
+  vec2 dpos = (fract(q * 75.0) - 0.5) / 75.0 + (vec2(hash(dcell + 2.2), hash(dcell + 8.8)) - 0.5) * 0.008;
+  float dr = (1.5 + 4.0 * pow(hash(dcell + 5.5), 2.0)) * px;
+  float dl = length(dpos);
+  float dustPatch = 0.5 + 0.8 * smoothstep(0.4, 0.7, fbm(q * 1.5 + sd * 3.0));
+  float darkDot = step(1.0 - 0.022 * dustPatch, hash(dcell - sd));
+  wet += darkDot * (exp(-pow((dl - dr * 1.6) / (1.2 * px), 2.0)) * 0.08 - smoothstep(dr, dr * 0.5, dl) * 0.45);
+  float lint = step(0.993, hash(dcell + sd)) * smoothstep(dr * 0.8, dr * 0.3, dl);
+  wet += lint * 0.4;
 
-  // scratches: vertical and horizontal hairlines
-  float sx = step(0.997, hash(vec2(floor(uv.x * 420.0), uSeed)))
-           * smoothstep(0.3, 0.8, vnoise(vec2(uv.x * 420.0, uv.y * 3.0 + uSeed * 9.0)));
-  float sy = step(0.995, hash(vec2(floor(uv.y * 300.0), uSeed + 1.0)))
-           * smoothstep(0.55, 0.85, vnoise(vec2(q.x * 2.5 + uSeed * 4.0, uv.y * 300.0)));
-  wet += sx * 0.18 + sy * 0.22 * uFx2.w;
+  // hairline scratches: very thin, long, slightly wandering lines in both directions
+  float hxCell = floor(uv.x * 140.0);
+  float hx = (fract(uv.x * 140.0) - (0.2 + 0.6 * hash(vec2(hxCell, uSeed)))) / 140.0 * aspect
+           + (vnoise(vec2(hxCell, uv.y * 3.0 + uSeed)) - 0.5) * 2.0 * px;
+  float vLine = step(0.965, hash(vec2(hxCell, uSeed + 2.0))) * exp(-pow(hx / (0.6 * px), 2.0))
+              * smoothstep(0.35, 0.7, vnoise(vec2(hxCell * 3.0, uv.y * 2.0 + uSeed)));
+  float hyCell = floor(uv.y * 90.0);
+  float hy = (fract(uv.y * 90.0) - (0.2 + 0.6 * hash(vec2(hyCell, uSeed + 4.0)))) / 90.0
+           + (vnoise(vec2(q.x * 2.0 + uSeed, hyCell)) - 0.5) * 2.0 * px;
+  float hLine = step(0.93, hash(vec2(hyCell, uSeed + 6.0))) * exp(-pow(hy / (0.6 * px), 2.0))
+              * smoothstep(0.45, 0.8, vnoise(vec2(q.x * 3.0 + uSeed * 4.0, hyCell * 2.0)));
+  wet += vLine * 0.16 + hLine * 0.2 * max(uFx2.w, 0.3);
 
   // border: burnt falloff, darker corners, silvered rim and a peeled emulsion line
   float d = plateDist(uv, q, aspect);
@@ -234,6 +285,7 @@ uniform float uHasTex;
 uniform float uSoft;    // edge softness of this plate
 uniform float uDevelop; // 0..1 progress of the positive (computed in JS)
 uniform float uThresh;  // field value the developing front has reached
+uniform float uWetDebug; // 1 keeps wet artifacts on the positive (tuning)
 
 float hash(vec2 p) {
   p = fract(p * vec2(123.34, 456.21));
@@ -305,7 +357,7 @@ void main() {
   float inside = smoothstep(-soft, soft, d);
 
   // negative: inverted, low contrast, cool grey, washed out at first
-  float lnBase = clamp(luma(srcNeg) * mul + add + wet, 0.0, 1.0);
+  float lnBase = clamp(luma(srcNeg) * mul + add, 0.0, 1.0);
   // in the negative the border is a soft, light grey, not a hard white frame
   float insideNeg = smoothstep(-soft - 0.02, soft + 0.02, d);
   lnBase = mix(0.3, lnBase, insideNeg);
@@ -313,6 +365,8 @@ void main() {
   ln = mix(0.62, ln, mix(0.35, 0.95, sharpen));
   ln = mix(ln, smoothstep(0.1, 0.9, ln), sharpen * 0.3);
   ln = mix(ln, 0.5, develop * 0.25); // the whole negative greys down as it develops
+  // wet artifacts sit on the plate like real dirt: same polarity in the negative, not inverted
+  ln = clamp(ln + wet * insideNeg * mix(0.5, 1.0, sharpen), 0.0, 1.0);
   vec3 negCol = vec3(ln) * vec3(0.93, 0.94, 0.96);
 
   // positive: sepia, warm light leak, border near black (~#0a0a0a at most)
@@ -320,9 +374,9 @@ void main() {
   lp = smoothstep(0.03, 0.97, lp);
   lp = pow(lp, 1.15);
   // wet artifacts linger only where the plate is still developing
-  float wetMask = clamp(1.0 - positive + haze * 0.6, 0.0, 1.0);
+  float wetMask = max(clamp(1.0 - positive + haze * 0.6, 0.0, 1.0), uWetDebug);
   lp = clamp(lp * mul + add + wet * wetMask, 0.0, 1.0);
-  vec3 posCol = sepia(lp) + vec3(0.22, 0.16, 0.04) * leak;
+  vec3 posCol = sepia(lp) + vec3(0.13, 0.095, 0.04) * leak;
   vec3 borderCol = vec3(0.016, 0.015, 0.014) * (0.6 + 0.8 * borderN);
   posCol = mix(borderCol, posCol, inside);
 
@@ -359,7 +413,7 @@ function program(fragSrc, uniforms) {
   return { p, u: Object.fromEntries(uniforms.map((n) => [n, gl.getUniformLocation(p, n)])) };
 }
 
-const main = program(FRAG, ['uTex', 'uPlate0', 'uPlate1', 'uRes', 'uImg', 'uT', 'uDur', 'uSeed', 'uClock', 'uHasTex', 'uSoft', 'uDevelop', 'uThresh']);
+const main = program(FRAG, ['uTex', 'uPlate0', 'uPlate1', 'uRes', 'uImg', 'uT', 'uDur', 'uSeed', 'uClock', 'uHasTex', 'uSoft', 'uDevelop', 'uThresh', 'uWetDebug']);
 const bake = program(PLATE_FRAG, ['uRes', 'uSeed', 'uBorder', 'uEdge', 'uFx1', 'uFx2', 'uLeak', 'uBlobs', 'uTex', 'uImg']);
 
 const buf = gl.createBuffer();
@@ -683,6 +737,7 @@ function frame(nowMs) {
   const develop = clamp01((ts - 2.1) / (style.devEnd - 2.1));
   gl.uniform1f(main.u.uDevelop, develop);
   gl.uniform1f(main.u.uThresh, frontAt(develop));
+  gl.uniform1f(main.u.uWetDebug, WET_DEBUG ? 1 : 0);
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
   // caption is written onto the plate once the positive has mostly come through
@@ -700,6 +755,68 @@ function smooth(a, b, x) {
 }
 
 requestAnimationFrame(frame);
+
+// ---------- background music ----------
+// Plays every track from ./music in order, looping the list. Browsers only allow sound after
+// the first interaction, so if autoplay is blocked it starts on the first click or key press.
+
+const MUSIC = params.get('music') !== '0';
+const audio = new Audio();
+audio.preload = 'auto';
+let tracks = [];
+let trackIdx = 0;
+let musicOn = MUSIC;
+
+async function startMusic() {
+  if (!MUSIC) return;
+  try {
+    tracks = (await (await fetch('/api/music')).json()).tracks || [];
+  } catch {
+    tracks = [];
+  }
+  if (!tracks.length) return;
+  audio.loop = tracks.length === 1;
+  audio.src = tracks[0];
+  audio.volume = 0;
+  tryPlay();
+}
+
+function tryPlay() {
+  if (!musicOn || !audio.src) return;
+  audio.play().then(fadeIn, () => {
+    const resume = () => {
+      removeEventListener('pointerdown', resume);
+      removeEventListener('keydown', resume);
+      tryPlay();
+    };
+    addEventListener('pointerdown', resume);
+    addEventListener('keydown', resume);
+  });
+}
+
+function fadeIn() {
+  const start = performance.now();
+  const step = (now) => {
+    audio.volume = Math.min(0.8, ((now - start) / 3000) * 0.8);
+    if (audio.volume < 0.8 && !audio.paused) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
+audio.addEventListener('ended', () => {
+  trackIdx = (trackIdx + 1) % tracks.length;
+  audio.src = tracks[trackIdx];
+  audio.play().catch(() => {});
+});
+
+addEventListener('keydown', (e) => {
+  if (e.key.toLowerCase() !== 'm' || !audio.src) return;
+  musicOn = !musicOn;
+  if (musicOn) tryPlay();
+  else audio.pause();
+});
+
+startMusic();
 
 // fullscreen on click or "f"
 function toggleFullscreen() {

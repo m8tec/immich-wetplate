@@ -23,6 +23,10 @@ The server picks the first source that is available:
 
 Create the API key in Immich under *Account Settings → API Keys*. It only needs read access to assets, plus albums if you use an album.
 
+## Background music
+
+Put audio files (mp3, m4a, ogg, wav) into `./music`. They play in name order and loop. Browsers only allow sound after an interaction, so if autoplay is blocked the music starts on the first click or key press. Press `M` to mute. The folder is git-ignored.
+
 ## URL parameters
 
 | Parameter | Effect |
@@ -32,6 +36,8 @@ Create the API key in Immich under *Account Settings → API Keys*. It only need
 | `t=5` | Freeze the cycle at this second, for tuning the look |
 | `img=<url>&caption=...` | Show a single image only |
 | `dev=7` | Fixed development end in seconds |
+| `artifacts=1` | Keep the plate artifacts on the finished positive, for tuning |
+| `music=0` | No background music |
 | `seed=0.42` | Use one fixed plate look (0–1) instead of a random one per photo |
 
 ## Timeline per photo (default 12 s)
@@ -54,6 +60,6 @@ Each photo gets its own plate, generated from a random seed in `plateStyle()`:
 - **Torn**: ragged lobes with a silvered rim and a peeled emulsion line.
 - **Heavy**: thick, blotchy, burnt borders with ink blobs eating into the image.
 
-On top of that, randomly: pour streaks, a dripping top edge, ink spatter, horizontal hairlines and a warm light leak. Dust, drops, scratches, streaks and grain clumps belong to the wet, undeveloped plate: they show in the negative and fade out wherever the positive comes through. The border is part of the plate's density, so during the negative phase it shows up pale grey, as in the game.
+On top of that, randomly: pour streaks, a dripping top edge, ink spatter, horizontal hairlines and a warm light leak. The wet, undeveloped plate carries pour lines (thin wavy contours with chains of small bubbles), patches of fine pitting, dust dots, lint, ink drops and hairline scratches. Like dirt on the plate they keep their polarity in the negative (dark dots stay dark) and fade out wherever the positive comes through. The border is part of the plate's density, so during the negative phase it shows up pale grey, as in the game.
 
 All timing and look parameters are in the fragment shader in `public/app.js`.

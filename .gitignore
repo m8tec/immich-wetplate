@@ -3,3 +3,5 @@ node_modules/
 photos/*
 !photos/.gitkeep
 .DS_Store
+music/*
+!music/.gitkeep

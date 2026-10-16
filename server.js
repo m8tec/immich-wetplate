@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = fileURLToPath(new URL('.', import.meta.url));
 const PUBLIC_DIR = join(ROOT, 'public');
 const PHOTOS_DIR = join(ROOT, 'photos');
+const MUSIC_DIR = join(ROOT, 'music');
 
 loadDotEnv(join(ROOT, '.env'));
 
@@ -34,8 +35,13 @@ const MIME = {
   '.webp': 'image/webp',
   '.avif': 'image/avif',
   '.gif': 'image/gif',
+  '.mp3': 'audio/mpeg',
+  '.m4a': 'audio/mp4',
+  '.ogg': 'audio/ogg',
+  '.wav': 'audio/wav',
 };
 const IMAGE_EXT = new Set(['.jpg', '.jpeg', '.png', '.webp', '.avif', '.gif']);
+const AUDIO_EXT = new Set(['.mp3', '.m4a', '.ogg', '.wav']);
 
 function loadDotEnv(file) {
   if (!existsSync(file)) return;
@@ -58,14 +64,28 @@ function safeJoin(base, rel) {
   return full === base || full.startsWith(base + sep) ? full : null;
 }
 
-async function serveFile(res, file) {
+async function serveFile(req, res, file) {
   try {
     const s = await stat(file);
     if (!s.isFile()) throw new Error('not a file');
-    res.writeHead(200, {
-      'content-type': MIME[extname(file).toLowerCase()] || 'application/octet-stream',
-      'content-length': s.size,
-    });
+    const type = MIME[extname(file).toLowerCase()] || 'application/octet-stream';
+    // byte ranges, so audio can seek and loop
+    const m = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '');
+    if (m && (m[1] || m[2])) {
+      const start = m[1] ? Number(m[1]) : Math.max(0, s.size - Number(m[2]));
+      const end = m[1] && m[2] ? Math.min(Number(m[2]), s.size - 1) : s.size - 1;
+      if (start > end || start >= s.size) {
+        return res.writeHead(416, { 'content-range': `bytes */${s.size}` }).end();
+      }
+      res.writeHead(206, {
+        'content-type': type,
+        'content-length': end - start + 1,
+        'content-range': `bytes ${start}-${end}/${s.size}`,
+        'accept-ranges': 'bytes',
+      });
+      return createReadStream(file, { start, end }).pipe(res);
+    }
+    res.writeHead(200, { 'content-type': type, 'content-length': s.size, 'accept-ranges': 'bytes' });
     createReadStream(file).pipe(res);
   } catch {
     res.writeHead(404).end('not found');
@@ -154,12 +174,23 @@ const server = createServer(async (req, res) => {
     if (path.startsWith('/immich/thumb/') && IMMICH_ENABLED) {
       return await proxyImmichThumb(res, path.slice('/immich/thumb/'.length));
     }
+    if (path === '/api/music') {
+      // background music: every audio file in ./music, played in order and looped
+      const files = existsSync(MUSIC_DIR)
+        ? (await readdir(MUSIC_DIR)).filter((f) => AUDIO_EXT.has(extname(f).toLowerCase())).sort()
+        : [];
+      return sendJson(res, 200, { tracks: files.map((f) => `/music/${encodeURIComponent(f)}`) });
+    }
+    if (path.startsWith('/music/')) {
+      const file = safeJoin(MUSIC_DIR, path.slice('/music/'.length));
+      return file ? serveFile(req, res, file) : res.writeHead(403).end();
+    }
     if (path.startsWith('/photos/')) {
       const file = safeJoin(PHOTOS_DIR, path.slice('/photos/'.length));
-      return file ? serveFile(res, file) : res.writeHead(403).end();
+      return file ? serveFile(req, res, file) : res.writeHead(403).end();
     }
     const file = safeJoin(PUBLIC_DIR, path === '/' ? 'index.html' : path.slice(1));
-    return file ? serveFile(res, file) : res.writeHead(403).end();
+    return file ? serveFile(req, res, file) : res.writeHead(403).end();
   } catch (err) {
     console.error(err);
     sendJson(res, 502, { error: String(err.message || err) });
