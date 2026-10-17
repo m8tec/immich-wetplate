@@ -5,8 +5,8 @@
 //   3. Demo images from picsum.photos
 
 import { createServer } from 'node:http';
-import { readdir, stat } from 'node:fs/promises';
-import { existsSync, readFileSync, createReadStream } from 'node:fs';
+import { open, readdir } from 'node:fs/promises';
+import { existsSync, readFileSync } from 'node:fs';
 import { extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -65,29 +65,48 @@ function safeJoin(base, rel) {
 }
 
 async function serveFile(req, res, file) {
+  // Open first, so a missing or unreadable file becomes a clean 404/403 instead of a stream
+  // error after the headers are out (which used to crash the whole server).
+  let handle;
   try {
-    const s = await stat(file);
-    if (!s.isFile()) throw new Error('not a file');
+    handle = await open(file, 'r');
+    const s = await handle.stat();
+    if (!s.isFile()) throw Object.assign(new Error('not a file'), { code: 'ENOENT' });
     const type = MIME[extname(file).toLowerCase()] || 'application/octet-stream';
+    let range = null;
     // byte ranges, so audio can seek and loop
     const m = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '');
     if (m && (m[1] || m[2])) {
       const start = m[1] ? Number(m[1]) : Math.max(0, s.size - Number(m[2]));
       const end = m[1] && m[2] ? Math.min(Number(m[2]), s.size - 1) : s.size - 1;
       if (start > end || start >= s.size) {
+        await handle.close();
         return res.writeHead(416, { 'content-range': `bytes */${s.size}` }).end();
       }
+      range = { start, end };
       res.writeHead(206, {
         'content-type': type,
         'content-length': end - start + 1,
         'content-range': `bytes ${start}-${end}/${s.size}`,
         'accept-ranges': 'bytes',
       });
-      return createReadStream(file, { start, end }).pipe(res);
+    } else {
+      res.writeHead(200, { 'content-type': type, 'content-length': s.size, 'accept-ranges': 'bytes' });
     }
-    res.writeHead(200, { 'content-type': type, 'content-length': s.size, 'accept-ranges': 'bytes' });
-    createReadStream(file).pipe(res);
-  } catch {
+    const stream = handle.createReadStream(range ?? {});
+    stream.on('error', (err) => {
+      console.error(`read failed: ${file}: ${err.message}`);
+      res.destroy();
+    });
+    res.on('close', () => stream.destroy()); // client gone (e.g. audio seeking): release the file
+    stream.pipe(res);
+  } catch (err) {
+    await handle?.close().catch(() => {});
+    if (err.code === 'EACCES' || err.code === 'EPERM') {
+      console.error(`no permission to read ${file} (running as uid ${process.getuid?.()}). ` +
+        'Make the file readable for that user, e.g. chown nobody:users on Unraid.');
+      return res.writeHead(403).end('forbidden');
+    }
     res.writeHead(404).end('not found');
   }
 }

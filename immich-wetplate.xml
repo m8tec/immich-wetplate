@@ -9,12 +9,12 @@
   <Privileged>false</Privileged>
   <Support>https://github.com/m8tec/immich-wetplate/issues</Support>
   <Project>https://github.com/m8tec/immich-wetplate</Project>
-  <Overview>Diashow im Stil der Red-Dead-Redemption-2-Ladebildschirme: zufaellige Fotos aus deinem Immich entwickeln sich vom Negativ zur alten Sepia-Glasplatte, mit Ort und Datum als handschriftliche Notiz und optional Hintergrundmusik. Im Browser oeffnen, Klick oder F fuer Vollbild, M schaltet die Musik stumm. Ohne Immich-Zugang werden Fotos aus dem Foto-Ordner gezeigt. Mit Watchtower-Label fuer automatische Updates.</Overview>
+  <Overview>Diashow im Stil der Red-Dead-Redemption-2-Ladebildschirme: zufaellige Fotos aus deinem Immich entwickeln sich vom Negativ zur alten Sepia-Glasplatte, mit Ort und Datum als handschriftliche Notiz und optional Hintergrundmusik. Im Browser oeffnen, Klick oder F fuer Vollbild, M schaltet die Musik stumm. Ohne Immich-Zugang werden Fotos aus dem Foto-Ordner gezeigt. Laeuft als nobody:users (99:100) wie bei Unraid ueblich, Musik- und Foto-Ordner muessen fuer diesen Benutzer lesbar sein. Mit Watchtower-Label fuer automatische Updates.</Overview>
   <Category>MediaApp:Photos</Category>
   <WebUI>http://[IP]:[PORT:8787]/</WebUI>
   <TemplateURL/>
   <Icon/>
-  <ExtraParams>--label com.centurylinklabs.watchtower.enable=true</ExtraParams>
+  <ExtraParams>--user 99:100 --label com.centurylinklabs.watchtower.enable=true</ExtraParams>
   <PostArgs/>
   <CPUset/>
   <DateInstalled/>
