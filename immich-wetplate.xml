@@ -13,7 +13,7 @@
   <Category>MediaApp:Photos</Category>
   <WebUI>http://[IP]:[PORT:8787]/</WebUI>
   <TemplateURL/>
-  <Icon/>
+  <Icon>https://raw.githubusercontent.com/m8tec/immich-wetplate/main/public/icon-512.png</Icon>
   <ExtraParams>--user 99:100 --label com.centurylinklabs.watchtower.enable=true</ExtraParams>
   <PostArgs/>
   <CPUset/>
